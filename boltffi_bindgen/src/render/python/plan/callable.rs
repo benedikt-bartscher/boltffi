@@ -100,6 +100,34 @@ impl PythonCallable {
     pub fn return_vector_c_style_enum(&self) -> Option<&PythonEnumType> {
         self.return_type.sequence_c_style_enum()
     }
+
+    pub fn returns_result(&self) -> bool {
+        self.return_type.is_result()
+    }
+
+    pub fn return_result_ok(&self) -> Option<&PythonType> {
+        self.return_type.result_ok()
+    }
+
+    pub fn return_result_err(&self) -> Option<&PythonType> {
+        self.return_type.result_err()
+    }
+
+    pub fn result_decoder_name(&self) -> String {
+        format!("boltffi_python_decode_result_{}", self.ffi_symbol)
+    }
+
+    pub fn result_ok_reader_name(&self) -> String {
+        self.return_result_ok()
+            .expect("result_ok_reader_name on a non-result callable")
+            .result_payload_reader_name()
+    }
+
+    pub fn result_err_reader_name(&self) -> String {
+        self.return_result_err()
+            .expect("result_err_reader_name on a non-result callable")
+            .result_payload_reader_name()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

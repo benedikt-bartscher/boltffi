@@ -79,6 +79,13 @@ pub enum PythonType {
     CStyleEnum(PythonEnumType),
     String,
     Sequence(PythonSequenceType),
+    /// A `Result<T, E>` return. The Ok payload is surfaced as the Python return
+    /// value; the Err payload is raised as an `FfiException`. Only valid in
+    /// return position (never as a parameter).
+    Result {
+        ok: Box<PythonType>,
+        err: Box<PythonType>,
+    },
 }
 
 impl PythonType {
@@ -90,6 +97,8 @@ impl PythonType {
             Self::CStyleEnum(enum_type) => enum_type.type_literal(),
             Self::String => "str".to_string(),
             Self::Sequence(sequence) => sequence.parameter_annotation(),
+            // Result is never a parameter; defensively annotate as the ok type.
+            Self::Result { ok, .. } => ok.parameter_annotation(),
         }
     }
 
@@ -101,6 +110,8 @@ impl PythonType {
             Self::CStyleEnum(enum_type) => enum_type.type_literal(),
             Self::String => "str".to_string(),
             Self::Sequence(sequence) => sequence.return_annotation(),
+            // A fallible function returns its Ok type and raises on Err.
+            Self::Result { ok, .. } => ok.return_annotation(),
         }
     }
 
@@ -112,6 +123,7 @@ impl PythonType {
             Self::CStyleEnum(enum_type) => Some(enum_type.tag_type),
             Self::String => None,
             Self::Sequence(sequence) => sequence.primitive_element(),
+            Self::Result { .. } => None,
         }
     }
 
@@ -173,6 +185,70 @@ impl PythonType {
     }
 
     pub fn is_owned_buffer(&self) -> bool {
-        matches!(self, Self::String | Self::Sequence(_))
+        // A Result crosses the boundary as an owned `[tag][payload]` buffer too.
+        matches!(self, Self::String | Self::Sequence(_) | Self::Result { .. })
+    }
+
+    pub fn is_result(&self) -> bool {
+        matches!(self, Self::Result { .. })
+    }
+
+    pub fn result_ok(&self) -> Option<&PythonType> {
+        match self {
+            Self::Result { ok, .. } => Some(ok),
+            _ => None,
+        }
+    }
+
+    pub fn result_err(&self) -> Option<&PythonType> {
+        match self {
+            Self::Result { err, .. } => Some(err),
+            _ => None,
+        }
+    }
+
+    /// All primitive types reachable through this type, flattening `Result`
+    /// into its ok/err payloads. Used so the C extension emits the boxer
+    /// helpers for primitives that only appear inside a `Result`.
+    pub fn contained_primitives(&self) -> Vec<PrimitiveType> {
+        match self {
+            Self::Result { ok, err } => {
+                let mut primitives = ok.contained_primitives();
+                primitives.extend(err.contained_primitives());
+                primitives
+            }
+            other => other.native_primitive().into_iter().collect(),
+        }
+    }
+
+    /// Whether this type can appear as a `Result` ok/err payload, i.e. the C
+    /// extension knows how to decode it from a `[tag][payload]` buffer at an
+    /// offset. Functions whose ok/err type is unsupported are dropped during
+    /// lowering rather than emitting broken bindings.
+    pub fn is_supported_result_payload(&self) -> bool {
+        match self {
+            Self::Void | Self::Primitive(_) | Self::String | Self::Record(_) => true,
+            Self::Sequence(sequence) => sequence.is_byte_like(),
+            Self::CStyleEnum(_) | Self::Result { .. } => false,
+        }
+    }
+
+    /// Name of the C reader that decodes a value of this type from a cursor
+    /// `(const uint8_t *base, uintptr_t avail, uintptr_t *consumed)`.
+    pub fn result_payload_reader_name(&self) -> String {
+        match self {
+            Self::Void => "boltffi_python_read_payload_void".to_string(),
+            Self::Primitive(primitive) => {
+                format!("boltffi_python_read_payload_{}", primitive.rust_name())
+            }
+            Self::String => "boltffi_python_read_payload_string".to_string(),
+            Self::Sequence(_) => "boltffi_python_read_payload_bytes".to_string(),
+            Self::Record(record_type) => {
+                format!("boltffi_python_read_payload_{}", record_type.c_type_name)
+            }
+            Self::CStyleEnum(_) | Self::Result { .. } => {
+                unreachable!("unsupported result payload type has no reader")
+            }
+        }
     }
 }

@@ -15,6 +15,15 @@ from collections.abc import Sequence
 MODULE_NAME: str
 PACKAGE_NAME: str
 PACKAGE_VERSION: str | None
+{% if module.uses_result_returns() %}
+
+class FfiException(Exception):
+    """Raised when a fallible native function returns an ``Err``.
+
+    The decoded ``Err`` payload is passed as the exception's argument.
+    """
+    ...
+{% endif %}
 {% if module.uses_records() %}
 
 {% for record in module.records %}

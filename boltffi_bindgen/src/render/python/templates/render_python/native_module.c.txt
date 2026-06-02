@@ -15,6 +15,9 @@ typedef struct FfiBuf_u8 { uint8_t* ptr; size_t len; size_t cap; size_t align; }
 typedef void (*boltffi_python_free_buf_fn)(FfiBuf_u8);
 static boltffi_python_free_buf_fn boltffi_python_free_buf_symbol = NULL;
 {% endif %}
+{% if module.uses_result_returns() %}
+static PyObject *boltffi_python_ffi_exception = NULL;
+{% endif %}
 {% if module.uses_records() %}
 {% for record in module.records %}
 static PyObject *{{ record.type_ref.type_object_name() }} = NULL;
@@ -1141,6 +1144,132 @@ static PyObject *{{ enumeration.vector_decoder_name() }}(FfiBuf_u8 buffer) {
     return decoded;
 }
 {% endfor %}
+{% if module.uses_result_returns() %}
+{% if module.result_payload_uses_void() %}
+static PyObject *boltffi_python_read_payload_void(const uint8_t *base, uintptr_t avail, uintptr_t *consumed) {
+    (void)base;
+    (void)avail;
+    *consumed = 0;
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+{% endif %}
+{% if module.result_payload_uses_string() %}
+static PyObject *boltffi_python_read_payload_string(const uint8_t *base, uintptr_t avail, uintptr_t *consumed) {
+    uint32_t utf8_length = 0;
+    PyObject *decoded = NULL;
+    if (avail < sizeof(uint32_t)) {
+        PyErr_SetString(PyExc_RuntimeError, "native result string payload is truncated");
+        return NULL;
+    }
+    memcpy(&utf8_length, base, sizeof(uint32_t));
+    if ((uintptr_t)utf8_length > avail - sizeof(uint32_t)) {
+        PyErr_SetString(PyExc_RuntimeError, "native result string payload is truncated");
+        return NULL;
+    }
+    if ((size_t)utf8_length > (size_t)PY_SSIZE_T_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "string result is too large for Python");
+        return NULL;
+    }
+    decoded = PyUnicode_DecodeUTF8((const char *)(base + sizeof(uint32_t)), (Py_ssize_t)utf8_length, NULL);
+    if (decoded == NULL) {
+        return NULL;
+    }
+    *consumed = sizeof(uint32_t) + (uintptr_t)utf8_length;
+    return decoded;
+}
+{% endif %}
+{% if module.result_payload_uses_bytes() %}
+static PyObject *boltffi_python_read_payload_bytes(const uint8_t *base, uintptr_t avail, uintptr_t *consumed) {
+    uint32_t byte_length = 0;
+    PyObject *decoded = NULL;
+    if (avail < sizeof(uint32_t)) {
+        PyErr_SetString(PyExc_RuntimeError, "native result bytes payload is truncated");
+        return NULL;
+    }
+    memcpy(&byte_length, base, sizeof(uint32_t));
+    if ((uintptr_t)byte_length > avail - sizeof(uint32_t)) {
+        PyErr_SetString(PyExc_RuntimeError, "native result bytes payload is truncated");
+        return NULL;
+    }
+    if ((size_t)byte_length > (size_t)PY_SSIZE_T_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "byte result is too large for Python");
+        return NULL;
+    }
+    decoded = PyBytes_FromStringAndSize((const char *)(base + sizeof(uint32_t)), (Py_ssize_t)byte_length);
+    if (decoded == NULL) {
+        return NULL;
+    }
+    *consumed = sizeof(uint32_t) + (uintptr_t)byte_length;
+    return decoded;
+}
+{% endif %}
+{% for primitive in module.result_payload_primitive_types() %}
+static PyObject *boltffi_python_read_payload_{{ primitive.rust_name() }}(const uint8_t *base, uintptr_t avail, uintptr_t *consumed) {
+    {{ primitive.c_type_name() }} value;
+    if (avail < sizeof(value)) {
+        PyErr_SetString(PyExc_RuntimeError, "native result value payload is truncated");
+        return NULL;
+    }
+    memcpy(&value, base, sizeof(value));
+    *consumed = sizeof(value);
+    return {{ primitive.boxer_name() }}(value);
+}
+{% endfor %}
+{% for record in module.result_payload_records() %}
+static PyObject *boltffi_python_read_payload_{{ record.type_ref.c_type_name }}(const uint8_t *base, uintptr_t avail, uintptr_t *consumed) {
+    {{ record.type_ref.c_type_name }} value;
+    uintptr_t offset = 0;
+    memset(&value, 0, sizeof(value));
+{% for field in record.fields.iter() %}
+    if (sizeof(value.{{ field.native_name }}) > avail - offset) {
+        PyErr_SetString(PyExc_RuntimeError, "native result record payload is truncated");
+        return NULL;
+    }
+    memcpy(&value.{{ field.native_name }}, base + offset, sizeof(value.{{ field.native_name }}));
+    offset += sizeof(value.{{ field.native_name }});
+{% endfor %}
+    *consumed = offset;
+    return {{ record.type_ref.boxer_name() }}(value);
+}
+{% endfor %}
+{% for binding in module.native_callables() %}
+{% if binding.callable.returns_result() %}
+static PyObject *{{ binding.callable.result_decoder_name() }}(FfiBuf_u8 buffer) {
+    uint8_t tag = 0;
+    uintptr_t consumed = 0;
+    PyObject *value = NULL;
+    if (!boltffi_python_validate_owned_buffer(buffer)) {
+        boltffi_python_free_buf_symbol(buffer);
+        return NULL;
+    }
+    if (buffer.len < sizeof(uint8_t)) {
+        boltffi_python_free_buf_symbol(buffer);
+        PyErr_SetString(PyExc_RuntimeError, "native result buffer is invalid");
+        return NULL;
+    }
+    tag = buffer.ptr[0];
+    if (tag == 0) {
+        value = {{ binding.callable.result_ok_reader_name() }}(buffer.ptr + 1, (uintptr_t)(buffer.len - 1), &consumed);
+        boltffi_python_free_buf_symbol(buffer);
+        return value;
+    } else if (tag == 1) {
+        PyObject *err_value = {{ binding.callable.result_err_reader_name() }}(buffer.ptr + 1, (uintptr_t)(buffer.len - 1), &consumed);
+        boltffi_python_free_buf_symbol(buffer);
+        if (err_value == NULL) {
+            return NULL;
+        }
+        PyErr_SetObject(boltffi_python_ffi_exception, err_value);
+        Py_DECREF(err_value);
+        return NULL;
+    }
+    boltffi_python_free_buf_symbol(buffer);
+    PyErr_SetString(PyExc_RuntimeError, "native result tag is invalid");
+    return NULL;
+}
+{% endif %}
+{% endfor %}
+{% endif %}
 {% for binding in module.native_callables() %}
 static PyObject *{{ binding.callable.wrapper_name() }}(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
 {% for parameter in binding.callable.parameters %}
@@ -1185,6 +1314,8 @@ static PyObject *{{ binding.callable.wrapper_name() }}(PyObject *self, PyObject 
     python_result = {{ return_enum.boxer_name() }}(result);
 {% elif binding.callable.returns_bytes() %}
     python_result = boltffi_python_decode_owned_bytes(result);
+{% elif binding.callable.returns_result() %}
+    python_result = {{ binding.callable.result_decoder_name() }}(result);
 {% elif binding.callable.returns_primitive_vector() %}
 {% let return_primitive = binding.callable.return_vector_primitive().unwrap() %}
     python_result = boltffi_python_decode_owned_vec_{{ return_primitive.rust_name() }}(result);
@@ -1229,5 +1360,23 @@ static struct PyModuleDef boltffi_python_module = {
 };
 
 PyMODINIT_FUNC PyInit__native(void) {
-    return PyModule_Create(&boltffi_python_module);
+    PyObject *module = PyModule_Create(&boltffi_python_module);
+    if (module == NULL) {
+        return NULL;
+    }
+{% if module.uses_result_returns() %}
+    boltffi_python_ffi_exception = PyErr_NewException("{{ module.module_name }}.FfiException", NULL, NULL);
+    if (boltffi_python_ffi_exception == NULL) {
+        Py_DECREF(module);
+        return NULL;
+    }
+    Py_INCREF(boltffi_python_ffi_exception);
+    if (PyModule_AddObject(module, "FfiException", boltffi_python_ffi_exception) < 0) {
+        Py_DECREF(boltffi_python_ffi_exception);
+        Py_DECREF(boltffi_python_ffi_exception);
+        Py_DECREF(module);
+        return NULL;
+    }
+{% endif %}
+    return module;
 }

@@ -94,6 +94,11 @@ _native.{{ enumeration.type_ref.registration_function_name() }}({{ enumeration.c
 {% endfor %}
 {% endif %}
 
+{% if module.uses_result_returns() %}
+
+FfiException = _native.FfiException
+{% endif %}
+
 MODULE_NAME = {{ module.module_name_literal() }}
 PACKAGE_NAME = {{ module.package_name_literal() }}
 PACKAGE_VERSION = {{ module.package_version_literal() }}
@@ -111,4 +116,7 @@ __all__ = [
 {% for function in module.functions %}
     "{{ function.python_name }}",
 {% endfor %}
+{% if module.uses_result_returns() %}
+    "FfiException",
+{% endif %}
 ]

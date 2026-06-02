@@ -45,7 +45,19 @@ impl PythonLowerer<'_> {
         match return_def {
             ReturnDef::Void => Some(PythonType::Void),
             ReturnDef::Value(type_expr) => self.lower_type(type_expr),
-            ReturnDef::Result { .. } => None,
+            ReturnDef::Result { ok, err } => {
+                let ok = self.lower_type(ok)?;
+                let err = self.lower_type(err)?;
+                // Only emit the function if both payloads are decodable; otherwise
+                // drop it (rather than emit broken bindings) as before.
+                if !ok.is_supported_result_payload() || !err.is_supported_result_payload() {
+                    return None;
+                }
+                Some(PythonType::Result {
+                    ok: Box::new(ok),
+                    err: Box::new(err),
+                })
+            }
         }
     }
 
@@ -206,6 +218,65 @@ mod tests {
         assert_eq!(
             lowered.callable.return_type,
             PythonType::Sequence(PythonSequenceType::PrimitiveVec(PrimitiveType::I32))
+        );
+    }
+
+    #[test]
+    fn lower_function_supports_result_returns_with_supported_payloads() {
+        let function = FunctionDef {
+            id: FunctionId::new("safe_divide"),
+            params: vec![ParamDef {
+                name: ParamName::new("value"),
+                type_expr: TypeExpr::Primitive(PrimitiveType::I32),
+                passing: ParamPassing::Value,
+                doc: None,
+            }],
+            returns: ReturnDef::Result {
+                ok: TypeExpr::Primitive(PrimitiveType::I32),
+                err: TypeExpr::String,
+            },
+            execution_kind: ExecutionKind::Sync,
+            doc: None,
+            deprecated: None,
+        };
+
+        let module = lower_contract(TypeCatalog::default(), vec![function])
+            .expect("python lowering should succeed");
+        let lowered = &module.functions[0];
+
+        assert_eq!(
+            lowered.callable.return_type,
+            PythonType::Result {
+                ok: Box::new(PythonType::Primitive(PrimitiveType::I32)),
+                err: Box::new(PythonType::String),
+            }
+        );
+        // A fallible function still annotates its public return as the ok type.
+        assert_eq!(lowered.callable.return_type.return_annotation(), "int");
+        assert!(module.uses_result_returns());
+    }
+
+    #[test]
+    fn lower_function_drops_result_returns_with_unsupported_payload() {
+        // A Result whose ok payload is itself a Result is not decodable, so the
+        // function must be dropped rather than emitting broken bindings.
+        let function = FunctionDef {
+            id: FunctionId::new("nested_result"),
+            params: vec![],
+            returns: ReturnDef::Result {
+                ok: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::I32))),
+                err: TypeExpr::String,
+            },
+            execution_kind: ExecutionKind::Sync,
+            doc: None,
+            deprecated: None,
+        };
+
+        let module = lower_contract(TypeCatalog::default(), vec![function])
+            .expect("python lowering should succeed");
+        assert!(
+            module.functions.is_empty(),
+            "result with an unsupported (non-byte vector) payload should be dropped"
         );
     }
 }

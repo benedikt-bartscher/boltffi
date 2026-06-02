@@ -266,7 +266,10 @@ impl CPythonTypeExt for PythonType {
             PythonType::Primitive(primitive) => primitive.c_type_name().to_string(),
             PythonType::Record(record_type) => record_type.c_type_name.clone(),
             PythonType::CStyleEnum(enum_type) => enum_type.tag_type.c_type_name().to_string(),
-            PythonType::String | PythonType::Sequence(_) => "FfiBuf_u8".to_string(),
+            // String, Sequence and Result all cross back as an owned buffer.
+            PythonType::String | PythonType::Sequence(_) | PythonType::Result { .. } => {
+                "FfiBuf_u8".to_string()
+            }
         }
     }
 }
@@ -284,6 +287,9 @@ impl CPythonParameterExt for PythonParameter {
     fn ffi_bindings(&self) -> Vec<CPythonCBinding> {
         match &self.type_ref {
             PythonType::Void => unreachable!("python parameters cannot be void"),
+            PythonType::Result { .. } => {
+                unreachable!("Result is only valid in return position, never a parameter")
+            }
             PythonType::Primitive(primitive) => vec![CPythonCBinding {
                 c_type_name: primitive.c_type_name().to_string(),
                 name: self.value_binding_name(),
@@ -342,6 +348,9 @@ impl CPythonParameterExt for PythonParameter {
     fn local_bindings(&self) -> Vec<CPythonCBinding> {
         match &self.type_ref {
             PythonType::Void => unreachable!("python parameters cannot be void"),
+            PythonType::Result { .. } => {
+                unreachable!("Result is only valid in return position, never a parameter")
+            }
             PythonType::Primitive(primitive) => vec![CPythonCBinding {
                 c_type_name: primitive.c_type_name().to_string(),
                 name: self.value_binding_name(),
@@ -372,6 +381,9 @@ impl CPythonParameterExt for PythonParameter {
     fn parser_name(&self) -> String {
         match &self.type_ref {
             PythonType::Void => unreachable!("python parameters cannot be void"),
+            PythonType::Result { .. } => {
+                unreachable!("Result is only valid in return position, never a parameter")
+            }
             PythonType::Primitive(primitive) => primitive.parser_name().to_string(),
             PythonType::Record(record_type) => record_type.parser_name(),
             PythonType::CStyleEnum(enum_type) => enum_type.parser_name(),
@@ -391,6 +403,9 @@ impl CPythonParameterExt for PythonParameter {
     fn parser_output_arguments(&self) -> Vec<String> {
         match &self.type_ref {
             PythonType::Void => unreachable!("python parameters cannot be void"),
+            PythonType::Result { .. } => {
+                unreachable!("Result is only valid in return position, never a parameter")
+            }
             PythonType::Primitive(_) | PythonType::Record(_) | PythonType::CStyleEnum(_) => {
                 vec![format!("&{}", self.value_binding_name())]
             }
@@ -403,6 +418,9 @@ impl CPythonParameterExt for PythonParameter {
     fn ffi_argument_expressions(&self) -> Vec<String> {
         match &self.type_ref {
             PythonType::Void => unreachable!("python parameters cannot be void"),
+            PythonType::Result { .. } => {
+                unreachable!("Result is only valid in return position, never a parameter")
+            }
             PythonType::Primitive(_) | PythonType::Record(_) | PythonType::CStyleEnum(_) => {
                 vec![self.value_binding_name()]
             }

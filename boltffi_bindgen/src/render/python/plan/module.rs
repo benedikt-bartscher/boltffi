@@ -98,7 +98,7 @@ impl PythonModule {
                     .parameters
                     .iter()
                     .filter_map(|parameter| parameter.type_ref.native_primitive())
-                    .chain(callable.return_type.native_primitive())
+                    .chain(callable.return_type.contained_primitives())
             }))
             .fold(Vec::new(), |mut primitive_types, primitive| {
                 if !primitive_types.contains(&primitive) {
@@ -164,6 +164,72 @@ impl PythonModule {
     pub fn uses_owned_buffer_returns(&self) -> bool {
         self.callables()
             .any(|callable| callable.return_type.is_owned_buffer())
+    }
+
+    pub fn uses_result_returns(&self) -> bool {
+        self.callables().any(PythonCallable::returns_result)
+    }
+
+    /// The deduplicated ok/err payload types across all `Result`-returning
+    /// callables, in first-seen order. Drives which payload readers the C
+    /// extension emits.
+    fn result_payload_types(&self) -> Vec<&PythonType> {
+        self.callables()
+            .filter(|callable| callable.returns_result())
+            .flat_map(|callable| {
+                callable
+                    .return_result_ok()
+                    .into_iter()
+                    .chain(callable.return_result_err())
+            })
+            .fold(Vec::new(), |mut types, ty| {
+                if !types.contains(&ty) {
+                    types.push(ty);
+                }
+                types
+            })
+    }
+
+    pub fn result_payload_uses_void(&self) -> bool {
+        self.result_payload_types()
+            .iter()
+            .any(|ty| ty.is_void())
+    }
+
+    pub fn result_payload_uses_string(&self) -> bool {
+        self.result_payload_types()
+            .iter()
+            .any(|ty| ty.is_string())
+    }
+
+    pub fn result_payload_uses_bytes(&self) -> bool {
+        self.result_payload_types()
+            .iter()
+            .any(|ty| ty.is_byte_like())
+    }
+
+    pub fn result_payload_primitive_types(&self) -> Vec<PrimitiveType> {
+        self.result_payload_types()
+            .iter()
+            .filter_map(|ty| match ty {
+                PythonType::Primitive(primitive) => Some(*primitive),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Records that appear as a `Result` ok/err payload, resolved to their full
+    /// definition (with fields) so the reader can decode the packed wire form.
+    pub fn result_payload_records(&self) -> Vec<&PythonRecord> {
+        self.result_payload_types()
+            .iter()
+            .filter_map(|ty| ty.record())
+            .filter_map(|record_type| {
+                self.records
+                    .iter()
+                    .find(|record| record.type_ref.c_type_name == record_type.c_type_name)
+            })
+            .collect()
     }
 
     pub fn uses_sequence_parameter_annotations(&self) -> bool {
