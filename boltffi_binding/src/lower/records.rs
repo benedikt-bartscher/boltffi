@@ -117,7 +117,13 @@ fn lower_encoded<S: SurfaceLower>(
                 key,
                 ty,
                 codec,
-                metadata::element_meta(field.doc.as_ref(), None, field.default.as_ref())?,
+                metadata::typed_element_meta(
+                    index,
+                    &field.type_expr,
+                    field.doc.as_ref(),
+                    None,
+                    field.default.as_ref(),
+                )?,
             ))
         })
         .collect::<Result<Vec<_>, LowerError>>()?;
@@ -417,10 +423,17 @@ mod tests {
         records: Vec<RecordDef>,
         enums: Vec<EnumDef>,
     ) -> Bindings<S> {
+        lower_contract_result::<S>(records, enums).expect("record should lower")
+    }
+
+    fn lower_contract_result<S: SurfaceLower>(
+        records: Vec<RecordDef>,
+        enums: Vec<EnumDef>,
+    ) -> Result<Bindings<S>, LowerError> {
         let mut contract = package();
         contract.records = records;
         contract.enums = enums;
-        lower::<S>(&contract).expect("record should lower")
+        lower::<S>(&contract)
     }
 
     fn record_methods_at<S: SurfaceLower>(
@@ -2252,7 +2265,7 @@ mod tests {
     }
 
     #[test]
-    fn parameter_path_default_is_rejected_without_type_context() {
+    fn parameter_path_default_is_rejected_without_enum_type_context() {
         let mut factor = value_param("factor", TypeExpr::Primitive(Primitive::I32));
         factor.default = Some(SourceDefaultValue::Path(SourcePath::single("Mode")));
 
@@ -2263,6 +2276,120 @@ mod tests {
             ReturnDef::Void,
         )]))
         .expect_err("path defaults need declared-type validation and must reject here");
+
+        assert!(matches!(
+            error.kind(),
+            LowerErrorKind::UnsupportedType(UnsupportedType::DefaultValue)
+        ));
+    }
+
+    fn mode_enum() -> EnumDef {
+        let mut mode = EnumDef::new("demo::Mode".into(), name("Mode"));
+        mode.variants = vec![
+            VariantDef::unit(name("Fast")),
+            VariantDef::unit(name("Slow")),
+        ];
+        mode
+    }
+
+    fn mode_path(qualifier: &str, variant: &str) -> SourcePath {
+        SourcePath::new(
+            boltffi_ast::PathRoot::Relative,
+            vec![
+                boltffi_ast::PathSegment::new(qualifier),
+                boltffi_ast::PathSegment::new(variant),
+            ],
+        )
+    }
+
+    #[test]
+    fn enum_typed_parameter_path_default_lowers_to_enum_variant() {
+        let mut level = value_param("level", enum_type("demo::Mode", "Mode"));
+        level.default = Some(SourceDefaultValue::Path(mode_path("Mode", "Fast")));
+
+        let bindings = lower_contract::<Native>(
+            vec![point_record_with_methods(vec![method_with(
+                "tune",
+                Receiver::Mutable,
+                vec![level],
+                ReturnDef::Void,
+            )])],
+            vec![mode_enum()],
+        );
+        let methods = first_record_methods(&bindings);
+        let meta = methods[0].callable().params()[0].meta();
+
+        match meta.default() {
+            Some(DefaultValue::EnumVariant {
+                enum_name,
+                variant_name,
+            }) => {
+                assert_eq!(enum_name, &CanonicalName::single("Mode"));
+                assert_eq!(variant_name, &CanonicalName::single("Fast"));
+            }
+            other => panic!("expected enum-variant default, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_typed_parameter_path_default_for_other_enum_is_rejected() {
+        let mut level = value_param("level", enum_type("demo::Mode", "Mode"));
+        level.default = Some(SourceDefaultValue::Path(mode_path("OtherMode", "Fast")));
+
+        let error = lower_contract_result::<Native>(
+            vec![point_record_with_methods(vec![method_with(
+                "tune",
+                Receiver::Mutable,
+                vec![level],
+                ReturnDef::Void,
+            )])],
+            vec![mode_enum()],
+        )
+        .expect_err("a path naming a different enum must reject");
+
+        assert!(matches!(
+            error.kind(),
+            LowerErrorKind::UnsupportedType(UnsupportedType::DefaultValue)
+        ));
+    }
+
+    #[test]
+    fn enum_typed_field_path_default_lowers_to_enum_variant() {
+        let mut mode_field = field("mode", enum_type("demo::Mode", "Mode"));
+        mode_field.default = Some(SourceDefaultValue::Path(mode_path("Mode", "Slow")));
+
+        let bindings = lower_contract::<Native>(
+            vec![record(
+                "demo::Config",
+                "Config",
+                vec![field("label", TypeExpr::String), mode_field],
+            )],
+            vec![mode_enum()],
+        );
+        let fields = encoded_record(&bindings).fields();
+
+        match fields[1].meta().default() {
+            Some(DefaultValue::EnumVariant {
+                enum_name,
+                variant_name,
+            }) => {
+                assert_eq!(enum_name, &CanonicalName::single("Mode"));
+                assert_eq!(variant_name, &CanonicalName::single("Slow"));
+            }
+            other => panic!("expected enum-variant default, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_typed_field_path_default_for_unknown_variant_is_rejected() {
+        let mut mode_field = field("mode", enum_type("demo::Mode", "Mode"));
+        mode_field.default = Some(SourceDefaultValue::Path(mode_path("Mode", "Turbo")));
+
+        let error = lower_contract_result::<Native>(
+            vec![record("demo::Config", "Config", vec![mode_field])],
+            vec![mode_enum()],
+        )
+        .expect_err("a path naming an unknown variant must reject");
 
         assert!(matches!(
             error.kind(),

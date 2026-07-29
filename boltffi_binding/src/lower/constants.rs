@@ -203,9 +203,33 @@ fn enum_variant_from_path(
     if !enum_qualifier_matches(enumeration, qualifier) && !associated_self {
         return None;
     }
+    unit_variant_default(enumeration, variant_segment.name.as_str())
+}
+
+/// Resolves a default-value path against a known enum type.
+///
+/// Returns [`DefaultValue::EnumVariant`] when `path` names a unit
+/// variant of `enumeration` through an enum-qualified spelling
+/// (`Mode::Fast`, `demo::Mode::Fast`), or `None` for any path this pass
+/// cannot prove is a unit variant of that enum. Shared with element
+/// metadata lowering, where a `#[boltffi::default(...)]` path on an
+/// enum-typed record field, enum payload field, or parameter resolves
+/// against the declared type.
+pub(super) fn enum_variant_default(
+    enumeration: &SourceEnum,
+    path: &SourcePath,
+) -> Option<DefaultValue> {
+    let (variant_segment, qualifier) = path.segments.split_last()?;
+    if !enum_qualifier_matches(enumeration, qualifier) {
+        return None;
+    }
+    unit_variant_default(enumeration, variant_segment.name.as_str())
+}
+
+fn unit_variant_default(enumeration: &SourceEnum, variant_segment: &str) -> Option<DefaultValue> {
     let variant = enumeration.variants.iter().find(|variant| {
         matches!(variant.payload, VariantPayload::Unit)
-            && canonical_name_matches_segment(&variant.name, variant_segment.name.as_str())
+            && canonical_name_matches_segment(&variant.name, variant_segment)
     })?;
     Some(DefaultValue::EnumVariant {
         enum_name: CanonicalName::from(&enumeration.name),
