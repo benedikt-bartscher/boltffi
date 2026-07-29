@@ -201,7 +201,13 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         release: bool,
 
-        #[arg(long, default_value = "true")]
+        #[arg(
+            long,
+            default_value = "true",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         regenerate: bool,
 
         #[arg(long)]
@@ -230,7 +236,13 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         version: Option<String>,
 
-        #[arg(long, default_value = "true")]
+        #[arg(
+            long,
+            default_value = "true",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         regenerate: bool,
 
         #[arg(long)]
@@ -254,7 +266,13 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         release: bool,
 
-        #[arg(long, default_value = "true")]
+        #[arg(
+            long,
+            default_value = "true",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         regenerate: bool,
 
         #[arg(long)]
@@ -273,7 +291,13 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         release: bool,
 
-        #[arg(long, default_value = "true")]
+        #[arg(
+            long,
+            default_value = "true",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         regenerate: bool,
 
         #[arg(long)]
@@ -291,7 +315,13 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         release: bool,
 
-        #[arg(long, default_value = "true")]
+        #[arg(
+            long,
+            default_value = "true",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         regenerate: bool,
 
         #[arg(long)]
@@ -327,7 +357,13 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         release: bool,
 
-        #[arg(long, default_value = "true")]
+        #[arg(
+            long,
+            default_value = "true",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         regenerate: bool,
 
         #[arg(long)]
@@ -353,7 +389,13 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         release: bool,
 
-        #[arg(long, default_value = "true")]
+        #[arg(
+            long,
+            default_value = "true",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         regenerate: bool,
 
         #[arg(long)]
@@ -371,7 +413,13 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         release: bool,
 
-        #[arg(long, default_value = "true")]
+        #[arg(
+            long,
+            default_value = "true",
+            default_missing_value = "true",
+            num_args = 0..=1,
+            action = clap::ArgAction::Set
+        )]
         regenerate: bool,
 
         #[arg(long)]
@@ -1440,6 +1488,52 @@ enabled = true
                 }
             }
         ));
+    }
+
+    #[test]
+    fn cli_parses_regeneration_selection_for_all_pack_targets() {
+        for target in [
+            "all", "apple", "android", "kmp", "wasm", "java", "python", "dart", "csharp",
+        ] {
+            let default = Cli::try_parse_from(["boltffi", "pack", target])
+                .expect("cli parse should succeed");
+            let enabled = Cli::try_parse_from(["boltffi", "pack", target, "--regenerate"])
+                .expect("cli parse should succeed");
+            let disabled = Cli::try_parse_from(["boltffi", "pack", target, "--regenerate", "false"])
+                .unwrap_or_else(|err| {
+                    panic!("`pack {target} --regenerate false` should parse: {err}")
+                });
+
+            assert!(
+                pack_regenerate_value(default),
+                "`pack {target}` should default to regenerate = true"
+            );
+            assert!(
+                pack_regenerate_value(enabled),
+                "`pack {target} --regenerate` should set regenerate = true"
+            );
+            assert!(
+                !pack_regenerate_value(disabled),
+                "`pack {target} --regenerate false` should set regenerate = false"
+            );
+        }
+    }
+
+    fn pack_regenerate_value(cli: Cli) -> bool {
+        let Commands::Pack { target } = cli.command else {
+            panic!("expected pack command");
+        };
+        match target {
+            PackTargetArg::All { regenerate, .. }
+            | PackTargetArg::Apple { regenerate, .. }
+            | PackTargetArg::Android { regenerate, .. }
+            | PackTargetArg::Kmp { regenerate, .. }
+            | PackTargetArg::Wasm { regenerate, .. }
+            | PackTargetArg::Java { regenerate, .. }
+            | PackTargetArg::Python { regenerate, .. }
+            | PackTargetArg::Dart { regenerate, .. }
+            | PackTargetArg::Csharp { regenerate, .. } => regenerate,
+        }
     }
 
     #[test]
