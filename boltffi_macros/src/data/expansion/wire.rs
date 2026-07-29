@@ -529,8 +529,11 @@ impl<'a> StructWireExpansion<'a> {
             .iter()
             .zip(render_context.field_types.iter())
             .map(|(field_name, field_type)| {
-                let field_buffer =
-                    syn::Ident::new(&format!("__boltffi_buf_{}", field_name), field_name.span());
+                let field_buffer = quote::format_ident!(
+                    "__boltffi_buf_{}",
+                    field_name,
+                    span = field_name.span()
+                );
                 let encode_expr = WireTypePlan::new(field_type, self.custom_types)
                     .encode_to_expr(quote! { &self.#field_name }, quote! { #field_buffer });
                 quote! {
@@ -981,6 +984,26 @@ mod tests {
         assert!(
             generated.contains("__boltffi_position += __boltffi_size"),
             "expected __boltffi_position increment, got: {generated}"
+        );
+    }
+
+    #[test]
+    fn struct_with_raw_ident_field_renders_encode_buffers() {
+        let item: ItemStruct = parse_quote! {
+            pub struct Payload {
+                pub r#type: String,
+                pub name: String,
+            }
+        };
+        let generated = render_struct(&item);
+
+        assert!(
+            generated.contains("__boltffi_buf_type"),
+            "expected raw-ident field buffer stripped of r#, got: {generated}"
+        );
+        assert!(
+            !generated.contains("__boltffi_buf_r#"),
+            "buffer ident must not contain the raw prefix: {generated}"
         );
     }
 
