@@ -647,6 +647,11 @@ mod tests {
         assert!(extension.contains("} boltffi_python_point_object;"));
         assert!(extension.contains("static PyObject *boltffi_python_point_new(PyTypeObject *cls"));
         assert!(extension.contains("static int boltffi_python_setup_point_type(PyObject *module)"));
+        // The spec name must be dotted: PyType_FromSpec raises
+        // `DeprecationWarning: builtin type Point has no __module__ attribute`
+        // during type creation when the name has no dot.
+        assert!(extension.contains("\"_native.Point\","));
+        assert!(!extension.contains("\n    \"Point\","));
         assert!(extension.contains(
             "boltffi_python_point_type = PyType_FromSpec(&boltffi_python_point_type_spec);"
         ));
@@ -666,6 +671,7 @@ mod tests {
         assert!(!extension.contains("_register_point"));
         assert!(extension.contains("Py_CLEAR(boltffi_python_point_type);"));
         assert!(init.contains("Point = _native.Point"));
+        assert!(init.contains("Point.__module__ = __name__"));
         assert!(init.contains("Point.__match_args__ = (\"x\",\"y\",)"));
         assert!(init.contains("Point.__annotations__ = {\"x\": float, \"y\": float}"));
         assert!(!init.contains("_native._register_point(Point)"));
