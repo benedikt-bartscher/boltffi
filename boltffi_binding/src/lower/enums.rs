@@ -171,7 +171,13 @@ fn lower_payload(
                     key,
                     ty,
                     codec,
-                    metadata::element_meta(field.doc.as_ref(), None, field.default.as_ref())?,
+                    metadata::typed_element_meta(
+                        index,
+                        &field.type_expr,
+                        field.doc.as_ref(),
+                        None,
+                        field.default.as_ref(),
+                    )?,
                 ))
             })
             .collect::<Result<Vec<_>, LowerError>>()

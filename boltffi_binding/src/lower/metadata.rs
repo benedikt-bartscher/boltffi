@@ -1,13 +1,13 @@
 use boltffi_ast::{
     DefaultValue as SourceDefaultValue, DeprecationInfo as SourceDeprecationInfo,
-    DocComment as SourceDocComment, FloatLiteral as SourceFloatLiteral,
+    DocComment as SourceDocComment, FloatLiteral as SourceFloatLiteral, TypeExpr,
 };
 
 use crate::{
     DeclMeta, DefaultValue, DeprecationInfo, DocComment, ElementMeta, FloatValue, IntegerValue,
 };
 
-use super::{LowerError, error::UnsupportedType};
+use super::{LowerError, constants, error::UnsupportedType, index::Index};
 
 pub fn decl_meta(
     doc: Option<&SourceDocComment>,
@@ -26,6 +26,50 @@ pub fn element_meta(
         deprecated.map(Into::into),
         default.map(DefaultValue::try_from).transpose()?,
     ))
+}
+
+/// Element metadata for an element whose declared type is known.
+///
+/// Identical to [`element_meta`] except that a
+/// [`SourceDefaultValue::Path`] default resolves against `type_expr`:
+/// when the element is typed as an exported enum and the path names a
+/// unit variant of that enum (`Mode::Fast`, `demo::Mode::Fast`), the
+/// default lowers to [`DefaultValue::EnumVariant`]. Every other path
+/// default keeps the categorical rejection: without a provable variant
+/// match this pass cannot represent the value in binding IR.
+pub fn typed_element_meta(
+    index: &Index,
+    type_expr: &TypeExpr,
+    doc: Option<&SourceDocComment>,
+    deprecated: Option<&SourceDeprecationInfo>,
+    default: Option<&SourceDefaultValue>,
+) -> Result<ElementMeta, LowerError> {
+    Ok(ElementMeta::new(
+        doc.map(DocComment::from),
+        deprecated.map(Into::into),
+        default
+            .map(|default| typed_default(index, type_expr, default))
+            .transpose()?,
+    ))
+}
+
+fn typed_default(
+    index: &Index,
+    type_expr: &TypeExpr,
+    default: &SourceDefaultValue,
+) -> Result<DefaultValue, LowerError> {
+    if let SourceDefaultValue::Path(path) = default {
+        if let TypeExpr::Enum { id, .. } = type_expr {
+            if let Some(value) = index
+                .enumeration(id)
+                .and_then(|enumeration| constants::enum_variant_default(enumeration, path))
+            {
+                return Ok(value);
+            }
+        }
+        return Err(LowerError::unsupported_type(UnsupportedType::DefaultValue));
+    }
+    DefaultValue::try_from(default)
 }
 
 impl From<&SourceDocComment> for DocComment {
