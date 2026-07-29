@@ -206,7 +206,7 @@ pub fn resolve(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("type resolution runner failed: {}", stderr.trim()));
+        return Err(resolution_failure_message(&stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -217,4 +217,80 @@ pub fn resolve(
         .collect::<HashMap<_, _>>();
 
     Ok(map)
+}
+
+/// Formats a runner build failure into the error the user sees.
+///
+/// The runner names every exported type by its source-location path
+/// (`crate::inner::Widget`) from outside the target crate, so a
+/// `#[data]`/`#[export]` item inside a private module fails the build
+/// with rustc's E0603 even when the item itself is re-exported from a
+/// public module (`mod inner; pub use inner::*;`). Translate that case
+/// into an actionable message instead of raw compiler output.
+fn resolution_failure_message(stderr: &str) -> String {
+    let stderr = stderr.trim();
+    if !stderr.contains("error[E0603]") {
+        return format!("type resolution runner failed: {}", stderr);
+    }
+    let private_paths = stderr
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("error[E0603]: "))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let detail = if private_paths.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", private_paths)
+    };
+    format!(
+        "exported #[data]/#[export] types must be reachable through a public module path{}: \
+         boltffi_bindgen references each type by the module path where it is declared, so a \
+         `pub use` re-export from a private module is not enough. Declare the containing \
+         module `pub` (e.g. `pub mod inner;`) or move the type into a public module.\n\
+         full compiler output:\n{}",
+        detail, stderr
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolution_failure_message;
+
+    #[test]
+    fn e0603_failure_maps_to_actionable_visibility_message() {
+        let stderr = "error[E0603]: module `inner` is private\n \
+                      --> src/main.rs:5:44\n  |\n5 | ...crate::inner::Widget...\n";
+
+        let message = resolution_failure_message(stderr);
+
+        assert!(
+            message.contains("reachable through a public module path"),
+            "expected actionable visibility guidance, got: {message}"
+        );
+        assert!(
+            message.contains("module `inner` is private"),
+            "expected the private module to be named, got: {message}"
+        );
+        assert!(
+            message.contains("pub mod inner;"),
+            "expected a concrete fix suggestion, got: {message}"
+        );
+        assert!(
+            message.contains("error[E0603]"),
+            "expected the raw compiler output to be preserved, got: {message}"
+        );
+    }
+
+    #[test]
+    fn non_e0603_failure_keeps_raw_runner_error() {
+        let stderr = "error[E0432]: unresolved import `target_crate`\n";
+
+        let message = resolution_failure_message(stderr);
+
+        assert!(
+            message.starts_with("type resolution runner failed: "),
+            "expected the generic runner error, got: {message}"
+        );
+        assert!(!message.contains("public module path"));
+    }
 }
