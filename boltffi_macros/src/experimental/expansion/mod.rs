@@ -1180,6 +1180,32 @@ mod tests {
         source
     }
 
+    /// Builds sync and async callbacks that use a generated enum as their declared error type.
+    fn typed_fallible_listener_contract() -> SourceContract {
+        let error = TypeExpr::enumeration(EnumId::new("demo::Status"), Path::single("Status"));
+        let mut listener = listener_trait();
+        let mut load = MethodDef::new(
+            MethodId::new("load"),
+            CanonicalName::single("load"),
+            Receiver::Shared,
+        );
+        load.returns = result_return(TypeExpr::Primitive(Primitive::U32), error.clone());
+        let mut load_async = MethodDef::new(
+            MethodId::new("load_async"),
+            CanonicalName::single("load_async"),
+            Receiver::Shared,
+        );
+        load_async.execution = ExecutionKind::Async;
+        load_async.returns = result_return(TypeExpr::Primitive(Primitive::U32), error);
+        listener.methods.push(load);
+        listener.methods.push(load_async);
+
+        let mut source = SourceContract::new(PackageInfo::new("demo", None));
+        source.enums.push(status_enum());
+        source.traits.push(listener);
+        source
+    }
+
     fn async_callback_returning_listener_contract() -> SourceContract {
         let mut listener = listener_trait();
         let mut method = MethodDef::new(
@@ -1756,6 +1782,53 @@ mod tests {
             CanonicalName::single("bytes"),
             byte_vec(),
         )];
+        function.returns = ReturnDef::value(TypeExpr::Primitive(Primitive::U32));
+
+        let mut source = SourceContract::new(PackageInfo::new("demo", None));
+        source.functions.push(function);
+        source
+    }
+
+    fn borrowed_bytes_param_contract() -> SourceContract {
+        let mut function = FunctionDef::new(
+            FunctionId::new("demo::bytes_sum"),
+            CanonicalName::single("bytes_sum"),
+        );
+        let mut parameter = parameter("bytes", byte_slice());
+        parameter.passing = ParameterPassing::Ref;
+        function.parameters = vec![parameter];
+        function.returns = ReturnDef::value(TypeExpr::Primitive(Primitive::U32));
+
+        let mut source = SourceContract::new(PackageInfo::new("demo", None));
+        source.functions.push(function);
+        source
+    }
+
+    fn borrowed_byte_vec_param_contract() -> SourceContract {
+        let mut function = FunctionDef::new(
+            FunctionId::new("demo::vec_sum"),
+            CanonicalName::single("vec_sum"),
+        );
+        let mut parameter = parameter("bytes", byte_vec());
+        parameter.passing = ParameterPassing::Ref;
+        function.parameters = vec![parameter];
+        function.returns = ReturnDef::value(TypeExpr::Primitive(Primitive::U32));
+
+        let mut source = SourceContract::new(PackageInfo::new("demo", None));
+        source.functions.push(function);
+        source
+    }
+
+    fn two_borrowed_bytes_params_contract() -> SourceContract {
+        let mut function = FunctionDef::new(
+            FunctionId::new("demo::both_sum"),
+            CanonicalName::single("both_sum"),
+        );
+        let mut left = parameter("left", byte_slice());
+        left.passing = ParameterPassing::Ref;
+        let mut right = parameter("right", byte_slice());
+        right.passing = ParameterPassing::Ref;
+        function.parameters = vec![left, right];
         function.returns = ReturnDef::value(TypeExpr::Primitive(Primitive::U32));
 
         let mut source = SourceContract::new(PackageInfo::new("demo", None));
@@ -5257,6 +5330,110 @@ mod tests {
     }
 
     #[test]
+    fn wasm_borrowed_bytes_param_expansion_borrows_the_payload() {
+        // `&[u8]` borrows the wire payload rather than decoding it into a
+        // `Vec` that exists only to be borrowed from. Compare against
+        // `wasm_bytes_param_expansion_decodes_owned_bytes`, where the owned
+        // `Vec<u8>` parameter still decodes.
+        let source = borrowed_bytes_param_contract();
+        let lowered = lower_with_declarations::<Wasm32>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+        let syntax = syn::parse_quote! {
+            pub fn bytes_sum(bytes: &[u8]) -> u32 {
+                bytes.iter().map(|byte| u32::from(*byte)).sum()
+            }
+        };
+
+        let tokens =
+            expand_function(&expansion, &source.functions[0], syntax).expect("expanded function");
+
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                pub fn bytes_sum(bytes: &[u8]) -> u32 {
+                    bytes.iter().map(|byte| u32::from(*byte)).sum()
+                }
+                #[cfg(target_arch = "wasm32")]
+                #[unsafe(no_mangle)]
+                pub unsafe extern "C" fn boltffi_function_demo_bytes_sum(
+                    __boltffi_bytes_ptr: *const u8,
+                    __boltffi_bytes_len: usize
+                ) -> u32 {
+                    let bytes: &[u8] = {
+                        if __boltffi_bytes_ptr.is_null() && __boltffi_bytes_len > 0 {
+                            ::boltffi::__private::set_last_error_len(stringify!(bytes), "null pointer with non-zero length", __boltffi_bytes_len as usize);
+                            return <u32 as ::core::default::Default>::default();
+                        }
+                        let __boltffi_bytes: &[u8] = if __boltffi_bytes_len == 0 {
+                            &[]
+                        } else {
+                            unsafe {
+                                ::core::slice::from_raw_parts(
+                                    __boltffi_bytes_ptr,
+                                    __boltffi_bytes_len
+                                )
+                            }
+                        };
+                        match ::boltffi::__private::wire::decode_bytes(__boltffi_bytes) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                ::boltffi::__private::set_last_error_display(stringify!(bytes), "wire decode failed", &error, __boltffi_bytes_len as usize);
+                                return <u32 as ::core::default::Default>::default();
+                            }
+                        }
+                    };
+                    bytes_sum(bytes)
+                }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn wasm_borrowed_byte_vec_param_keeps_decoding_into_owned_storage() {
+        // `&Vec<u8>` borrows the vector, not a slice of it, so it still needs
+        // the owned storage to point at. The guard is on the borrow shape, not
+        // on the codec alone.
+        let source = borrowed_byte_vec_param_contract();
+        let lowered = lower_with_declarations::<Wasm32>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+        let syntax = syn::parse_quote! {
+            pub fn vec_sum(bytes: &Vec<u8>) -> u32 {
+                bytes.len() as u32
+            }
+        };
+
+        let tokens = expand_function(&expansion, &source.functions[0], syntax)
+            .expect("expanded function")
+            .to_string();
+
+        assert!(tokens.contains("wire :: decode ::"), "{tokens}");
+        assert!(!tokens.contains("decode_bytes"), "{tokens}");
+    }
+
+    #[test]
+    fn wasm_two_borrowed_bytes_params_each_borrow_their_own_payload() {
+        let source = two_borrowed_bytes_params_contract();
+        let lowered = lower_with_declarations::<Wasm32>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+        let syntax = syn::parse_quote! {
+            pub fn both_sum(left: &[u8], right: &[u8]) -> u32 {
+                (left.len() + right.len()) as u32
+            }
+        };
+
+        let tokens = expand_function(&expansion, &source.functions[0], syntax)
+            .expect("expanded function")
+            .to_string();
+
+        assert_eq!(tokens.matches("decode_bytes").count(), 2, "{tokens}");
+        // Each parameter reads its own pointer and length, so the two borrows
+        // cannot alias unless the caller passes overlapping buffers.
+        assert!(tokens.contains("__boltffi_left_ptr"), "{tokens}");
+        assert!(tokens.contains("__boltffi_right_ptr"), "{tokens}");
+    }
+
+    #[test]
     fn wasm_mutable_bytes_param_expansion_decodes_mut_slice_ref() {
         let source = mutable_bytes_param_contract();
         let lowered = lower_with_declarations::<Wasm32>(&source).expect("lowered bindings");
@@ -7219,6 +7396,40 @@ mod tests {
     }
 
     #[test]
+    fn native_typed_callback_errors_restore_unexpected_error_conversion() {
+        let source = typed_fallible_listener_contract();
+        let lowered = lower_with_declarations::<Native>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+
+        let tokens =
+            expand_native_callback(&expansion, &source.traits[0]).expect("expanded callback");
+        let rendered = tokens.to_string();
+        syn::parse2::<syn::File>(tokens).expect("expanded callback parses");
+
+        assert_eq!(rendered.matches("classify_payload").count(), 2);
+        assert!(rendered.contains("UnexpectedFfiCallbackPayload :: Unexpected"));
+        assert!(rendered.contains("UnexpectedFfiCallbackPayload :: Malformed"));
+        assert!(rendered.contains(
+            "Status as :: core :: convert :: From < :: boltffi :: __private :: UnexpectedFfiCallbackError"
+        ));
+    }
+
+    #[test]
+    fn wasm_typed_callback_errors_do_not_claim_native_unexpected_error_protocol() {
+        let source = typed_fallible_listener_contract();
+        let lowered = lower_with_declarations::<Wasm32>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+
+        let tokens =
+            expand_wasm_callback(&expansion, &source.traits[0]).expect("expanded callback");
+        let rendered = tokens.to_string();
+        syn::parse2::<syn::File>(tokens).expect("expanded callback parses");
+
+        assert!(!rendered.contains("UnexpectedFfiCallbackPayload"));
+        assert!(!rendered.contains("classify_payload"));
+    }
+
+    #[test]
     fn wasm_async_callback_method_result_return_decodes_completion_branch() {
         let source = async_fallible_listener_contract();
         let lowered = lower_with_declarations::<Wasm32>(&source).expect("lowered bindings");
@@ -8905,7 +9116,7 @@ mod tests {
                 pub extern "C" fn boltffi_function_demo_try_ping() -> u64 {
                     match try_ping() {
                         Ok(()) => {
-                            ::boltffi::__private::FfiBuf::default().into_packed()
+                            ::boltffi::__private::FfiBuf::EMPTY_PACKED
                         }
                         Err(__boltffi_error) => {
                             ::boltffi::__private::FfiBuf::wire_encode_owned_string(__boltffi_error).into_packed()
@@ -8954,7 +9165,7 @@ mod tests {
                                     );
                                 }
                             }
-                            ::boltffi::__private::FfiBuf::default().into_packed()
+                            ::boltffi::__private::FfiBuf::EMPTY_PACKED
                         }
                         Err(__boltffi_error) => {
                             ::boltffi::__private::FfiBuf::wire_encode_owned_string(__boltffi_error).into_packed()

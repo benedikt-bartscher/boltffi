@@ -267,7 +267,9 @@ mod tests {
                 .value_return_method(ReturnInvocationContext::SyncExport, ReturnPlatform::Wasm,),
             ValueReturnMethod::DirectReturn
         ));
-        assert!(statement.contains("FfiBuf :: default () . into_packed ()"));
+        // wasm returns the packed constant rather than building an `FfiBuf` and
+        // calling `into_packed`; the two are the same value by construction.
+        assert!(statement.contains("FfiBuf :: EMPTY_PACKED"));
         assert!(statement.contains("return :: boltffi :: __private :: FfiBuf :: default ()"));
     }
 

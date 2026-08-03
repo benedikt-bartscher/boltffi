@@ -11,9 +11,21 @@ pub struct CustomTypesTemplate<'a> {
 }
 
 #[derive(Template)]
-#[template(path = "render_dart/native_functions.txt", escape = "none")]
-pub struct NativeFunctionsTemplate<'a> {
-    pub cfuncs: &'a [super::DartNativeFunction],
+#[template(path = "render_dart/sync_extern_function.txt", escape = "none")]
+pub struct SyncExternFunctionTemplate<'a> {
+    pub ffi_def: &'a super::DartFFIFunctionDef,
+}
+
+#[derive(Template)]
+#[template(path = "render_dart/async_extern_function.txt", escape = "none")]
+pub struct AsyncExternFunctionTemplate<'a> {
+    pub async_def: &'a super::DartFFIAsyncFunctionDef,
+}
+
+#[derive(Template)]
+#[template(path = "render_dart/extern_function.txt", escape = "none")]
+pub struct ExternFunctionTemplate<'a> {
+    pub func: &'a super::DartFunction,
 }
 
 #[derive(Template)]
@@ -61,16 +73,23 @@ pub struct ClassTemplate<'a> {
     pub class: &'a super::DartClass,
 }
 
+#[derive(Template)]
+#[template(path = "render_dart/callable.txt", escape = "none")]
+pub struct CallableTemplate<'a> {
+    pub func: &'a super::DartFunction,
+}
+
 #[cfg(test)]
 mod tests {
     use boltffi_ffi_rules::callable::ExecutionKind;
 
     use crate::{
         ir::{
-            self, CallbackId, CallbackKind, CallbackMethodDef, CallbackTraitDef, ClassDef, ClassId,
-            ConstructorDef, FfiContract, MethodDef, MethodId, PackageInfo, ParamDef, ParamName,
-            ParamPassing, PrimitiveType, Receiver, ReturnDef, StreamDef, StreamId, StreamMode,
-            TypeExpr,
+            self, CStyleVariant, CallbackId, CallbackKind, CallbackMethodDef, CallbackTraitDef,
+            ClassDef, ClassId, ConstructorDef, DefaultValue, EnumDef, EnumId, EnumRepr,
+            FfiContract, FieldDef, FieldName, MethodDef, MethodId, PackageInfo, ParamDef,
+            ParamName, ParamPassing, PrimitiveType, Receiver, RecordDef, RecordId, ReturnDef,
+            StreamDef, StreamId, StreamMode, TypeExpr, VariantName,
         },
         render::dart::{DartLibrary, DartLowerer},
     };
@@ -144,11 +163,37 @@ mod tests {
                         doc: None,
                     }],
                     returns: ReturnDef::Void,
-                    doc: None,
+                    doc: Some(String::from("process bytes callback method")),
                 },
             ],
             kind: CallbackKind::Trait,
+            doc: Some(String::from("A Generic Callback Trait Def")),
+        }
+    }
+
+    fn generic_status_c_enum_def() -> EnumDef {
+        EnumDef {
+            id: EnumId::new("Status"),
+            repr: EnumRepr::CStyle {
+                tag_type: PrimitiveType::I32,
+                variants: vec![
+                    CStyleVariant {
+                        name: VariantName::new("Active"),
+                        discriminant: 0,
+                        doc: None,
+                    },
+                    CStyleVariant {
+                        name: VariantName::new("Inactive"),
+                        discriminant: 1,
+                        doc: None,
+                    },
+                ],
+            },
+            is_error: false,
+            constructors: vec![],
+            methods: vec![],
             doc: None,
+            deprecated: None,
         }
     }
 
@@ -184,6 +229,8 @@ mod tests {
     pub fn snapshot_class() {
         let mut ffi = empty_contract();
 
+        ffi.catalog.insert_enum(generic_status_c_enum_def());
+
         let temperature_stream = |mode: StreamMode| StreamDef {
             id: StreamId::new(format!(
                 "temperature_event_{}",
@@ -210,6 +257,21 @@ mod tests {
             )),
             item_type: TypeExpr::String,
             mode,
+            doc: Some(String::from("GetTemperature stream")),
+            deprecated: None,
+        };
+
+        let status_stream = |mode: StreamMode| StreamDef {
+            id: StreamId::new(format!(
+                "status_event_{}",
+                match mode {
+                    StreamMode::Async => "async",
+                    StreamMode::Batch => "batch",
+                    StreamMode::Callback => "callback",
+                }
+            )),
+            item_type: TypeExpr::Enum(EnumId::new("Status")),
+            mode,
             doc: None,
             deprecated: None,
         };
@@ -224,6 +286,11 @@ mod tests {
             [StreamMode::Async, StreamMode::Batch, StreamMode::Callback]
                 .into_iter()
                 .map(names_stream),
+        );
+        streams.extend(
+            [StreamMode::Async, StreamMode::Batch, StreamMode::Callback]
+                .into_iter()
+                .map(status_stream),
         );
 
         ffi.catalog.insert_class(ClassDef {
@@ -264,23 +331,168 @@ mod tests {
                     rest_params: vec![],
                 },
             ],
-            methods: vec![MethodDef {
-                id: MethodId::new("get_name"),
-                receiver: Receiver::RefSelf,
-                params: vec![],
-                returns: ReturnDef::Value(TypeExpr::String),
-                execution_kind: ExecutionKind::Sync,
-                doc: None,
-                deprecated: None,
-            }],
+            methods: vec![
+                MethodDef {
+                    id: MethodId::new("get_name"),
+                    receiver: Receiver::RefSelf,
+                    params: vec![],
+                    returns: ReturnDef::Value(TypeExpr::String),
+                    execution_kind: ExecutionKind::Sync,
+                    doc: Some(String::from("Person.getName(...)")),
+                    deprecated: None,
+                },
+                MethodDef {
+                    id: MethodId::new("get_default_name"),
+                    receiver: Receiver::Static,
+                    params: vec![],
+                    returns: ReturnDef::Value(TypeExpr::String),
+                    execution_kind: ExecutionKind::Sync,
+                    doc: None,
+                    deprecated: None,
+                },
+            ],
             streams,
-            doc: None,
+            doc: Some(String::from("Generic `Person` Class")),
             deprecated: None,
         });
         let library = lower(&ffi);
 
         let template = ClassTemplate {
             class: &library.classes[0],
+        };
+
+        insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    pub fn snapshot_record_with_primitive_list_fields() {
+        let mut ffi = empty_contract();
+
+        ffi.catalog.insert_record(RecordDef {
+            id: RecordId::new("PrimitiveLists"),
+            is_repr_c: false,
+            is_error: false,
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("u8s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::U8))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("i8s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::I8))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("u16s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::U16))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("i16s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::I16))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("u32s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::U32))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("i32s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::I32))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("u64s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::U64))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("i64s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::I64))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("f32s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::F32))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("f64s"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::F64))),
+                    doc: None,
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("bools"),
+                    type_expr: TypeExpr::Vec(Box::new(TypeExpr::Primitive(PrimitiveType::Bool))),
+                    doc: None,
+                    default: None,
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: None,
+            deprecated: None,
+        });
+
+        let library = lower(&ffi);
+
+        let template = RecordTemplate {
+            record: &library.records[0],
+        };
+
+        insta::assert_snapshot!(template.render().unwrap());
+    }
+
+    #[test]
+    pub fn snapshot_record_with_default_fields() {
+        let mut ffi = empty_contract();
+
+        ffi.catalog.insert_record(RecordDef {
+            id: RecordId::new("Vector"),
+            is_repr_c: false,
+            is_error: false,
+            fields: vec![
+                FieldDef {
+                    name: FieldName::new("x"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: Some(String::from("`x` coordinate")),
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("y"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: Some(String::from("`y` coordinate")),
+                    default: None,
+                },
+                FieldDef {
+                    name: FieldName::new("z"),
+                    type_expr: TypeExpr::Primitive(PrimitiveType::F64),
+                    doc: Some(String::from("`z` coordinate")),
+                    default: Some(DefaultValue::Float(0.0)),
+                },
+            ],
+            constructors: vec![],
+            methods: vec![],
+            doc: Some(String::from("A 3D Vector\n\n`z` coordinate defaults to 0")),
+            deprecated: None,
+        });
+
+        let library = lower(&ffi);
+
+        let template = RecordTemplate {
+            record: &library.records[0],
         };
 
         insta::assert_snapshot!(template.render().unwrap());

@@ -17,25 +17,11 @@ pub use stream::*;
 pub use r#type::*;
 
 #[derive(Debug, Clone)]
-pub enum DartConstructorKind {
-    Default,
-    Named { name: String },
-}
-
-#[derive(Debug, Clone)]
-pub struct DartConstructor {
-    pub native: DartNativeFunction,
-    pub kind: DartConstructorKind,
-    pub params: Vec<DartFunctionParam>,
-    pub is_fallible: bool,
-}
-
-#[derive(Debug, Clone)]
 pub struct DartLibrary {
     pub custom_types: Vec<DartCustomType>,
-    pub native: DartNative,
     pub records: Vec<DartRecord>,
     pub enums: Vec<DartEnum>,
     pub callbacks: Vec<DartCallback>,
     pub classes: Vec<DartClass>,
+    pub functions: Vec<DartFunction>,
 }

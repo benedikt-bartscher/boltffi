@@ -1,4 +1,5 @@
 import Demo
+import Foundation
 import XCTest
 
 final class SyncTraitsTests: DemoTestCase {
@@ -60,6 +61,9 @@ final class SyncTraitsTests: DemoTestCase {
 
     final class SwiftResultCallback: ResultCallback {
         func compute(value: Int32) throws -> Int32 {
+            if value == .min {
+                throw NSError(domain: "UnexpectedSwiftCallbackError", code: 1)
+            }
             if value < 0 {
                 throw MathError.negativeInput
             }
@@ -172,6 +176,9 @@ final class SyncTraitsTests: DemoTestCase {
         XCTAssertEqual(try invokeResultCallback(callback: resultCallback, value: 7), 70)
         XCTAssertThrowsError(try invokeResultCallback(callback: resultCallback, value: -1)) { error in
             XCTAssertEqual(error as? MathError, .negativeInput)
+        }
+        XCTAssertThrowsError(try invokeResultCallback(callback: resultCallback, value: .min)) { error in
+            XCTAssertEqual(error as? MathError, .overflow)
         }
         XCTAssertEqual(invokeOffsetCallback(callback: offsetCallback, value: -5, delta: 8), 3)
         XCTAssertEqual(invokeBoxedOffsetCallback(callback: offsetCallback, value: 10, delta: 4), 14)

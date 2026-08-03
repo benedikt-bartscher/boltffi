@@ -61,7 +61,7 @@ impl ReturnCrossing {
     pub fn empty(self) -> TokenStream {
         match self {
             Self::Buffer => quote! { ::boltffi::__private::FfiBuf::default() },
-            Self::Packed => quote! { ::boltffi::__private::FfiBuf::default().into_packed() },
+            Self::Packed => quote! { ::boltffi::__private::FfiBuf::EMPTY_PACKED },
         }
     }
 }

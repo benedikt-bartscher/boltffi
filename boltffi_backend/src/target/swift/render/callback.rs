@@ -175,6 +175,7 @@ enum CallbackError {
 struct EncodedCallbackError {
     buffer: ArgumentBuffer,
     copy: Identifier,
+    typed_error: Option<TypeName>,
 }
 
 struct ParameterPlan<'context, 'bindings> {
@@ -1292,10 +1293,11 @@ impl EncodedCallbackError {
         context: &RenderContext<Native>,
     ) -> Result<Self> {
         let buffer = Self::buffer()?;
+        let (error_value, typed_error) = Self::error_value(ty, context)?;
         let write = codec
             .render_with(&mut Writer::new(
                 buffer.writer().clone(),
-                Self::error_value(ty, context)?,
+                error_value,
                 context,
             ))
             .into_iter()
@@ -1306,21 +1308,80 @@ impl EncodedCallbackError {
         Ok(Self {
             buffer: buffer.with_statements(write),
             copy: Identifier::parse(bridge.support().buffer_from_bytes()?.name())?,
+            typed_error,
         })
     }
 
     fn statement(&self, call: Expression, returns: &Return) -> Statement {
         Statement::new(format!(
-            "do {{\n{}\n}} catch {{\n{}\n}}",
+            "do {{\n{}\n}} {}",
             returns.success_statement(call).indented("    "),
-            self.catch_statement().indented("    ")
+            self.catch_handlers(self.catch_statement(), self.unexpected_catch_statement())
         ))
     }
 
     fn catch_statement(&self) -> Statement {
+        self.returning_payload_statement(self.buffer.bytes_statement())
+    }
+
+    fn async_statement(
+        &self,
+        call: Expression,
+        returns: &Return,
+        completion: &AsyncCompletion,
+    ) -> Statement {
+        Statement::new(format!(
+            "do {{\n{}\n}} {}",
+            returns
+                .completion_success_statement(call, completion)
+                .indented("    "),
+            self.catch_handlers(
+                self.completion_statement(completion),
+                self.unexpected_completion_statement(completion),
+            )
+        ))
+    }
+
+    /// Renders a typed catch before the fallback catch when the declared error is a record or enum.
+    fn catch_handlers(&self, declared: Statement, unexpected: Statement) -> String {
+        match &self.typed_error {
+            Some(typed_error) => format!(
+                "catch let error as {typed_error} {{\n{}\n}} catch {{\n{}\n}}",
+                declared.indented("    "),
+                unexpected.indented("    ")
+            ),
+            None => format!("catch {{\n{}\n}}", declared.indented("    ")),
+        }
+    }
+
+    /// Returns an unexpected-error payload to a synchronous native callback caller.
+    fn unexpected_catch_statement(&self) -> Statement {
+        self.returning_payload_statement(self.unexpected_bytes_statement())
+    }
+
+    /// Completes an asynchronous native callback with an unexpected-error payload.
+    fn unexpected_completion_statement(&self, completion: &AsyncCompletion) -> Statement {
+        self.completion_payload_statement(self.unexpected_bytes_statement(), completion)
+    }
+
+    /// Encodes the caught host-language error in the reserved unexpected-error envelope.
+    fn unexpected_bytes_statement(&self) -> Statement {
+        Statement::let_value(
+            self.buffer.bytes(),
+            Expression::call(
+                "boltffiEncodeUnexpectedCallbackError",
+                [Expression::new("error")]
+                    .into_iter()
+                    .collect::<ArgumentList>(),
+            ),
+        )
+    }
+
+    /// Returns encoded callback error bytes from a synchronous callback invocation.
+    fn returning_payload_statement(&self, bytes: Statement) -> Statement {
         Statement::new(
             [
-                self.buffer.bytes_statement().to_string(),
+                bytes.to_string(),
                 self.buffer.returning_scope(
                     Statement::new(Statement::expression(self.copy_expression()).indented("    ")),
                     "",
@@ -1331,25 +1392,19 @@ impl EncodedCallbackError {
         )
     }
 
-    fn async_statement(
-        &self,
-        call: Expression,
-        returns: &Return,
-        completion: &AsyncCompletion,
-    ) -> Statement {
-        Statement::new(format!(
-            "do {{\n{}\n}} catch {{\n{}\n}}",
-            returns
-                .completion_success_statement(call, completion)
-                .indented("    "),
-            self.completion_statement(completion).indented("    ")
-        ))
+    fn completion_statement(&self, completion: &AsyncCompletion) -> Statement {
+        self.completion_payload_statement(self.buffer.bytes_statement(), completion)
     }
 
-    fn completion_statement(&self, completion: &AsyncCompletion) -> Statement {
+    /// Sends encoded callback error bytes through an asynchronous completion.
+    fn completion_payload_statement(
+        &self,
+        bytes: Statement,
+        completion: &AsyncCompletion,
+    ) -> Statement {
         Statement::new(
             [
-                self.buffer.bytes_statement().to_string(),
+                bytes.to_string(),
                 self.buffer.unsafe_buffer_scope(
                     Statement::new(
                         Statement::expression(completion.call(
@@ -1370,30 +1425,39 @@ impl EncodedCallbackError {
     }
 
     fn buffer() -> Result<ArgumentBuffer> {
+        let bytes = GeneratedLocal::ErrorBuffer.suffixed("bytes")?;
         Ok(ArgumentBuffer::from_parts(
-            GeneratedLocal::ErrorBuffer.suffixed("bytes")?,
+            bytes,
             GeneratedLocal::ErrorBuffer.suffixed("buffer")?,
             GeneratedLocal::ErrorBuffer.suffixed("writer")?,
         ))
     }
 
-    fn error_value(ty: &TypeRef, context: &RenderContext<Native>) -> Result<Expression> {
+    /// Returns the value to encode and the typed catch required to bind that value safely.
+    fn error_value(
+        ty: &TypeRef,
+        context: &RenderContext<Native>,
+    ) -> Result<(Expression, Option<TypeName>)> {
         match ty {
-            TypeRef::String => Ok(Expression::nil_coalescing(
-                Expression::optional_chain_member(
-                    Expression::new("(error as? FfiError)"),
-                    "message",
+            TypeRef::String => Ok((
+                Expression::nil_coalescing(
+                    Expression::optional_chain_member(
+                        Expression::new("(error as? FfiError)"),
+                        "message",
+                    ),
+                    Expression::call(
+                        "String",
+                        [Expression::labeled("describing", "error")]
+                            .into_iter()
+                            .collect::<ArgumentList>(),
+                    ),
                 ),
-                Expression::call(
-                    "String",
-                    [Expression::labeled("describing", "error")]
-                        .into_iter()
-                        .collect::<ArgumentList>(),
-                ),
+                None,
             )),
-            TypeRef::Record(_) | TypeRef::Enum(_) => Ok(Expression::forced(Expression::new(
-                format!("(error as? {})", SwiftType::type_ref(ty, context)?),
-            ))),
+            TypeRef::Record(_) | TypeRef::Enum(_) => {
+                let typed_error = SwiftType::type_ref(ty, context)?;
+                Ok((Expression::new("error"), Some(typed_error)))
+            }
             _ => Err(SwiftHost::unsupported("callback encoded error type")),
         }
     }

@@ -145,10 +145,19 @@ pub extern "C" fn boltffi_buf_with_len(len: usize) -> FfiBuf {
 
 #[cfg(target_arch = "wasm32")]
 impl FfiBuf {
+    /// Packed form of an empty buffer.
+    ///
+    /// `into_packed` returns `0` whenever `len == 0`, and `FfiBuf::empty()` has
+    /// `len == 0`, so `FfiBuf::default().into_packed()` is always this value.
+    /// Error paths return the constant instead: `into_packed` is a real call in
+    /// the wasm module, so spelling it out made every argument-decode failure
+    /// site build an `FfiBuf` on the stack and call into it.
+    pub const EMPTY_PACKED: u64 = 0;
+
     pub fn into_packed(self) -> u64 {
         let len = self.len;
         if len == 0 {
-            return 0;
+            return Self::EMPTY_PACKED;
         }
         if self.cap == len && self.align == 1 {
             let ptr = self.ptr;
@@ -165,6 +174,16 @@ impl FfiBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_empty_buffer_has_no_length() {
+        // `EMPTY_PACKED` is only correct because `into_packed` returns 0 for a
+        // zero length and an empty buffer has one. That second half is what
+        // this pins; the first is two visible lines in `into_packed`, and is
+        // `wasm32`-gated so it cannot be asserted from a host test.
+        assert_eq!(FfiBuf::empty().len, 0);
+        assert_eq!(FfiBuf::default().len, 0);
+    }
+
     use super::*;
 
     #[test]

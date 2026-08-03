@@ -95,7 +95,12 @@ pub(crate) fn pack_wasm(
 
     if config.wasm_optimize_enabled(wasm_artifact_profile) {
         let step = reporter.step("Optimizing WASM binary");
-        optimize_wasm_binary(config, &wasm_artifact_path)?;
+        optimize_wasm_binary(
+            config,
+            &wasm_artifact_path,
+            wasm_artifact_profile,
+            &build_cargo_args,
+        )?;
         step.finish_success();
     }
 
@@ -250,7 +255,99 @@ impl WasmArtifactPath {
     }
 }
 
-fn optimize_wasm_binary(config: &Config, wasm_path: &Path) -> Result<()> {
+/// Binaryen infers which wasm features a module may use from its
+/// `target_features` custom section — and the linker deletes that section under
+/// `[profile.release] strip = true`, which is the usual advice for small wasm.
+/// `wasm-opt` then rejects the module it was just handed: rustc emits
+/// `memory.copy`, and without the section binaryen assumes bulk memory is off.
+///
+/// So the features are passed explicitly, taken from what rustc reports for the
+/// target rather than hardcoded, which keeps them correct if rustc's defaults
+/// move. `--all-features` would also silence the error, but it lets `wasm-opt`
+/// *emit* SIMD, threads or GC instructions the host engine may not implement.
+fn binaryen_feature_flags(
+    config: &Config,
+    profile: WasmProfile,
+    build_cargo_args: &[String],
+) -> Vec<&'static str> {
+    effective_target_features(config, profile, build_cargo_args)
+        .iter()
+        .flat_map(|feature| binaryen_flags_for(feature))
+        .copied()
+        .collect()
+}
+
+/// Maps a rustc target feature onto the flags binaryen spells it with. Features
+/// binaryen does not know are dropped: passing an unknown `--enable-*` makes it
+/// exit, and leaving one out is no worse than today.
+fn binaryen_flags_for(feature: &str) -> &'static [&'static str] {
+    match feature {
+        // Binaryen splits bulk memory: `memory.copy` and `memory.fill` sit
+        // behind the `-opt` half, and rustc emits both.
+        "bulk-memory" => &["--enable-bulk-memory", "--enable-bulk-memory-opt"],
+        "multivalue" => &["--enable-multivalue"],
+        "mutable-globals" => &["--enable-mutable-globals"],
+        "nontrapping-fptoint" => &["--enable-nontrapping-float-to-int"],
+        "reference-types" => &["--enable-reference-types"],
+        "sign-ext" => &["--enable-sign-ext"],
+        "simd128" => &["--enable-simd"],
+        "atomics" => &["--enable-threads"],
+        "exception-handling" => &["--enable-exception-handling"],
+        "extended-const" => &["--enable-extended-const"],
+        "relaxed-simd" => &["--enable-relaxed-simd"],
+        "tail-call" => &["--enable-tail-call"],
+        _ => &[],
+    }
+}
+
+/// Reads the features the *build* actually enables, by asking rustc through
+/// cargo with the same arguments the build used.
+///
+/// A bare `rustc --print cfg` would report only the default toolchain's
+/// defaults: it receives no `RUSTFLAGS`, no `CARGO_TARGET_*_RUSTFLAGS`, no
+/// `.cargo/config.toml`, and not the toolchain a `rust-toolchain.toml` selects.
+/// A project enabling `simd128` that way would still have its module rejected.
+/// Going through `cargo rustc` makes cargo resolve all of that.
+///
+/// Returns empty when cargo cannot be reached or the query fails, which leaves
+/// the previous behaviour rather than failing the pack over a diagnostic.
+fn effective_target_features(
+    config: &Config,
+    profile: WasmProfile,
+    build_cargo_args: &[String],
+) -> Vec<String> {
+    let mut command = Command::new("cargo");
+    command
+        .arg("rustc")
+        .args(["--target", config.wasm_triple()]);
+    if matches!(profile, WasmProfile::Release) {
+        command.arg("--release");
+    }
+    command.args(build_cargo_args);
+    command.args(["--", "--print", "cfg"]);
+
+    let Ok(output) = command.output() else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_target_features(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_target_features(cfg: &str) -> Vec<String> {
+    cfg.lines()
+        .filter_map(|line| line.trim().strip_prefix("target_feature="))
+        .map(|value| value.trim_matches('"').to_string())
+        .collect()
+}
+
+fn optimize_wasm_binary(
+    config: &Config,
+    wasm_path: &Path,
+    profile: WasmProfile,
+    build_cargo_args: &[String],
+) -> Result<()> {
     let optimize_level_flag = match config.wasm_optimize_level() {
         WasmOptimizeLevel::O0 => "-O0",
         WasmOptimizeLevel::O1 => "-O1",
@@ -285,6 +382,10 @@ fn optimize_wasm_binary(config: &Config, wasm_path: &Path) -> Result<()> {
         .arg(wasm_path)
         .arg("-o")
         .arg(&optimized_path);
+
+    for flag in binaryen_feature_flags(config, profile, build_cargo_args) {
+        command.arg(flag);
+    }
 
     if !config.wasm_optimize_strip_debug() {
         // Keeps the name section, and any debug sections the strip pass left.
@@ -485,5 +586,72 @@ mod tests {
         .into_path();
 
         assert_eq!(artifact_path, PathBuf::from("artifacts/demo.wasm"));
+    }
+}
+
+#[cfg(test)]
+mod optimize_feature_tests {
+    use super::{binaryen_flags_for, parse_target_features};
+
+    #[test]
+    fn parses_the_features_rustc_prints() {
+        let cfg = "debug_assertions\ntarget_arch=\"wasm32\"\ntarget_feature=\"bulk-memory\"\ntarget_feature=\"sign-ext\"\ntarget_os=\"unknown\"\n";
+
+        assert_eq!(parse_target_features(cfg), vec!["bulk-memory", "sign-ext"]);
+    }
+
+    #[test]
+    fn bulk_memory_enables_both_halves() {
+        // `memory.copy` sits behind the `-opt` half, and rustc emits it, so
+        // enabling only `--enable-bulk-memory` still fails validation.
+        assert_eq!(
+            binaryen_flags_for("bulk-memory"),
+            ["--enable-bulk-memory", "--enable-bulk-memory-opt"]
+        );
+    }
+
+    #[test]
+    fn drops_features_binaryen_does_not_know() {
+        // Passing an unknown `--enable-*` makes wasm-opt exit, so an unmapped
+        // feature has to be skipped rather than forwarded.
+        assert!(binaryen_flags_for("some-future-proposal").is_empty());
+    }
+
+    #[test]
+    fn maps_the_wasm32_defaults_binaryen_needs() {
+        // What `cargo rustc --print cfg` reports for wasm32-unknown-unknown.
+        // Without the bulk-memory half, a stripped module is rejected for using
+        // `memory.copy`.
+        let cfg = concat!(
+            "target_feature=\"bulk-memory\"\n",
+            "target_feature=\"multivalue\"\n",
+            "target_feature=\"mutable-globals\"\n",
+            "target_feature=\"nontrapping-fptoint\"\n",
+            "target_feature=\"reference-types\"\n",
+            "target_feature=\"sign-ext\"\n",
+        );
+        let flags: Vec<&str> = parse_target_features(cfg)
+            .iter()
+            .flat_map(|feature| binaryen_flags_for(feature))
+            .copied()
+            .collect();
+
+        assert!(flags.contains(&"--enable-bulk-memory-opt"), "{flags:?}");
+        assert!(flags.contains(&"--enable-sign-ext"), "{flags:?}");
+        assert_eq!(flags.len(), 7, "{flags:?}");
+    }
+
+    #[test]
+    fn a_non_default_feature_enabled_by_rustflags_is_mapped() {
+        // The case a bare `rustc --print cfg` would miss: cargo reports
+        // `simd128` when the build enables it, and it has to reach wasm-opt.
+        let cfg = "target_feature=\"bulk-memory\"\ntarget_feature=\"simd128\"\n";
+        let flags: Vec<&str> = parse_target_features(cfg)
+            .iter()
+            .flat_map(|feature| binaryen_flags_for(feature))
+            .copied()
+            .collect();
+
+        assert!(flags.contains(&"--enable-simd"), "{flags:?}");
     }
 }

@@ -1,4 +1,5 @@
 import Demo
+import Foundation
 import XCTest
 
 final class AsyncTraitsTests: DemoTestCase {
@@ -22,6 +23,9 @@ final class AsyncTraitsTests: DemoTestCase {
 
     final class SwiftAsyncResultFormatter: AsyncResultFormatter {
         func renderMessage(scope: String, message: String) async throws -> String {
+            if scope == "unexpected" {
+                throw NSError(domain: "UnexpectedSwiftCallbackError", code: 1)
+            }
             if scope.isEmpty {
                 throw MathError.negativeInput
             }
@@ -99,6 +103,16 @@ final class AsyncTraitsTests: DemoTestCase {
             XCTFail("expected async string result error")
         } catch let error as MathError {
             XCTAssertEqual(error, .negativeInput)
+        }
+        do {
+            _ = try await renderMessageWithAsyncResultCallback(
+                formatter: asyncResultFormatter,
+                scope: "unexpected",
+                message: "result"
+            )
+            XCTFail("expected unexpected Swift callback error to map through Rust")
+        } catch let error as MathError {
+            XCTAssertEqual(error, .overflow)
         }
         do {
             _ = try await transformPointWithAsyncResultCallback(

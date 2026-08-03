@@ -1,13 +1,10 @@
 use boltffi_ffi_rules::naming;
 
 use crate::{
-    ir::{
-        AbiStream, CallId, ClassDef, ClassId, PrimitiveType, StreamDef, StreamId,
-        StreamItemTransport,
-    },
+    ir::{AbiStream, CallId, ClassDef, ClassId, StreamDef, StreamId, StreamItemTransport},
     render::dart::{
-        DartClass, DartNativeFunction, DartNativeFunctionCallMode, DartNativeFunctionKind,
-        DartNativeFunctionParam, DartNativeType, DartStream, DartType, NamingConvention,
+        DartClass, DartFFIFunctionDef, DartFFIFunctionParamSig, DartFFIFunctionSig, DartFFIIntType,
+        DartFFIType, DartStream, DartType, NamingConvention,
     },
 };
 
@@ -24,120 +21,138 @@ impl<'a> super::DartLowerer<'a> {
 
         let StreamItemTransport::WireEncoded { decode_ops } = &abi_stream.item;
 
-        let mut pop_batch_params = vec![DartNativeFunctionParam {
+        let mut pop_batch_params = vec![DartFFIFunctionParamSig {
             name: "handle".to_string(),
-            native_type: DartNativeType::Pointer(Box::new(DartNativeType::Void)),
+            ty: DartFFIType::Pointer(Box::new(DartFFIType::Void)),
         }];
         match abi_stream.item_size {
             Some(_) => {
                 pop_batch_params.extend([
-                    DartNativeFunctionParam {
+                    DartFFIFunctionParamSig {
                         name: "output_ptr".to_string(),
-                        native_type: DartNativeType::Pointer(Box::new(
-                            DartNativeType::from_transport(&abi_stream.item_transport),
-                        )),
+                        ty: DartFFIType::Pointer(Box::new(DartFFIType::from_transport(
+                            &abi_stream.item_transport,
+                        ))),
                     },
-                    DartNativeFunctionParam {
+                    DartFFIFunctionParamSig {
                         name: "output_capacity".to_string(),
-                        native_type: DartNativeType::Primitive(PrimitiveType::USize),
+                        ty: DartFFIType::Int(DartFFIIntType::UintPtr),
                     },
                 ]);
             }
-            None => pop_batch_params.extend([DartNativeFunctionParam {
+            None => pop_batch_params.extend([DartFFIFunctionParamSig {
                 name: "max_count".to_string(),
-                native_type: DartNativeType::Primitive(PrimitiveType::USize),
+                ty: DartFFIType::Int(DartFFIIntType::UintPtr),
             }]),
         }
         let pop_batch_return_type = match abi_stream.item_size {
-            Some(_) => DartNativeType::Primitive(PrimitiveType::USize),
-            None => DartNativeType::OwnedBuffer,
+            Some(_) => DartFFIType::Int(DartFFIIntType::UintPtr),
+            None => DartFFIType::Buf,
         };
-        let pop_batch_fn = DartNativeFunction {
+        let pop_batch_fn = DartFFIFunctionDef {
             symbol: abi_stream.pop_batch.to_string(),
-            params: pop_batch_params,
-            return_type: pop_batch_return_type,
+            sig: DartFFIFunctionSig {
+                args: pop_batch_params,
+                ret: pop_batch_return_type,
+            },
             is_leaf: true,
-            call_mode: DartNativeFunctionCallMode::Sync,
         };
 
         DartStream {
             name: NamingConvention::function_name(stream.id.as_str()),
             item_ty: DartType::from_type_expr(&stream.item_type, &self.ffi.catalog),
             item_read_seq: decode_ops.clone(),
-            ffi_item_ty: DartNativeType::from_transport(&abi_stream.item_transport),
+            item_passing: self.value_passing_from_transport(&abi_stream.item_transport),
+            ffi_item_ty: DartFFIType::from_transport(&abi_stream.item_transport),
             ffi_item_size: abi_stream.item_size,
-            subscribe_fn: DartNativeFunction {
+            subscribe_fn: DartFFIFunctionDef {
                 symbol: abi_stream.subscribe.to_string(),
-                params: vec![DartNativeFunctionParam {
-                    name: "handle".to_string(),
-                    native_type: DartNativeType::Pointer(Box::new(DartNativeType::Void)),
-                }],
-                return_type: DartNativeType::Pointer(Box::new(DartNativeType::Void)),
-                is_leaf: true,
-                call_mode: DartNativeFunctionCallMode::Sync,
-            },
-            poll_fn: DartNativeFunction {
-                symbol: abi_stream.poll.to_string(),
-                params: vec![
-                    DartNativeFunctionParam {
+                sig: DartFFIFunctionSig {
+                    args: vec![DartFFIFunctionParamSig {
                         name: "handle".to_string(),
-                        native_type: DartNativeType::Pointer(Box::new(DartNativeType::Void)),
-                    },
-                    DartNativeFunctionParam {
-                        name: "callback_data".to_string(),
-                        native_type: DartNativeType::Primitive(PrimitiveType::U64),
-                    },
-                    DartNativeFunctionParam {
-                        name: "callback".to_string(),
-                        native_type: DartNativeType::Function {
-                            kind: DartNativeFunctionKind::Callback,
-                            params: vec![DartNativeType::Primitive(PrimitiveType::I8)],
-                            return_ty: Box::new(DartNativeType::Void),
+                        ty: DartFFIType::Pointer(Box::new(DartFFIType::Void)),
+                    }],
+                    ret: DartFFIType::Pointer(Box::new(DartFFIType::Void)),
+                },
+                is_leaf: true,
+            },
+            poll_fn: DartFFIFunctionDef {
+                symbol: abi_stream.poll.to_string(),
+                sig: DartFFIFunctionSig {
+                    args: vec![
+                        DartFFIFunctionParamSig {
+                            name: "handle".to_string(),
+                            ty: DartFFIType::Pointer(Box::new(DartFFIType::Void)),
                         },
-                    },
-                ],
-                return_type: DartNativeType::Void,
+                        DartFFIFunctionParamSig {
+                            name: "callback_data".to_string(),
+                            ty: DartFFIType::Int(DartFFIIntType::Uint64),
+                        },
+                        DartFFIFunctionParamSig {
+                            name: "callback".to_string(),
+                            ty: DartFFIType::NativeFunction {
+                                sig: Box::new(DartFFIFunctionSig {
+                                    args: vec![
+                                        DartFFIFunctionParamSig {
+                                            name: String::new(),
+                                            ty: DartFFIType::Int(DartFFIIntType::Uint64),
+                                        },
+                                        DartFFIFunctionParamSig {
+                                            name: String::new(),
+                                            ty: DartFFIType::Int(DartFFIIntType::Int8),
+                                        },
+                                    ],
+                                    ret: DartFFIType::Void,
+                                }),
+                            },
+                        },
+                    ],
+                    ret: DartFFIType::Void,
+                },
                 is_leaf: false,
-                call_mode: DartNativeFunctionCallMode::Sync,
             },
             pop_batch_fn,
-            wait_fn: DartNativeFunction {
+            wait_fn: DartFFIFunctionDef {
                 symbol: abi_stream.wait.to_string(),
-                params: vec![
-                    DartNativeFunctionParam {
-                        name: "handle".to_string(),
-                        native_type: DartNativeType::Pointer(Box::new(DartNativeType::Void)),
-                    },
-                    DartNativeFunctionParam {
-                        name: "timeout_milliseconds".to_string(),
-                        native_type: DartNativeType::Primitive(PrimitiveType::U32),
-                    },
-                ],
-                return_type: DartNativeType::Primitive(PrimitiveType::I32),
+                sig: DartFFIFunctionSig {
+                    args: vec![
+                        DartFFIFunctionParamSig {
+                            name: "handle".to_string(),
+                            ty: DartFFIType::Pointer(Box::new(DartFFIType::Void)),
+                        },
+                        DartFFIFunctionParamSig {
+                            name: "timeout_milliseconds".to_string(),
+                            ty: DartFFIType::Int(DartFFIIntType::Uint32),
+                        },
+                    ],
+                    ret: DartFFIType::Int(DartFFIIntType::Int32),
+                },
                 is_leaf: true,
-                call_mode: DartNativeFunctionCallMode::Sync,
             },
-            unsubscribe_fn: DartNativeFunction {
+            unsubscribe_fn: DartFFIFunctionDef {
                 symbol: abi_stream.unsubscribe.to_string(),
-                params: vec![DartNativeFunctionParam {
-                    name: "handle".to_string(),
-                    native_type: DartNativeType::Pointer(Box::new(DartNativeType::Void)),
-                }],
-                return_type: DartNativeType::Void,
+                sig: DartFFIFunctionSig {
+                    args: vec![DartFFIFunctionParamSig {
+                        name: "handle".to_string(),
+                        ty: DartFFIType::Pointer(Box::new(DartFFIType::Void)),
+                    }],
+                    ret: DartFFIType::Void,
+                },
                 is_leaf: false,
-                call_mode: DartNativeFunctionCallMode::Sync,
             },
-            free_fn: DartNativeFunction {
+            free_fn: DartFFIFunctionDef {
                 symbol: abi_stream.free.to_string(),
-                params: vec![DartNativeFunctionParam {
-                    name: "handle".to_string(),
-                    native_type: DartNativeType::Pointer(Box::new(DartNativeType::Void)),
-                }],
-                return_type: DartNativeType::Void,
+                sig: DartFFIFunctionSig {
+                    args: vec![DartFFIFunctionParamSig {
+                        name: "handle".to_string(),
+                        ty: DartFFIType::Pointer(Box::new(DartFFIType::Void)),
+                    }],
+                    ret: DartFFIType::Void,
+                },
                 is_leaf: false,
-                call_mode: DartNativeFunctionCallMode::Sync,
             },
             mode: stream.mode,
+            doc: stream.doc.clone(),
         }
     }
 
@@ -184,6 +199,7 @@ impl<'a> super::DartLowerer<'a> {
             constructors,
             methods,
             streams,
+            doc: class.doc.clone(),
         }
     }
 

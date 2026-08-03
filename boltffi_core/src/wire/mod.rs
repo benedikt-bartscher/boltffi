@@ -9,5 +9,5 @@ mod temporal;
 pub use blittable::Blittable;
 pub use buffer::{WireBuffer, decode, encode};
 pub use constants::*;
-pub use decode::{DecodeError, DecodeResult, InvalidWireValue, WireDecode};
+pub use decode::{DecodeError, DecodeResult, InvalidWireValue, WireDecode, decode_bytes};
 pub use encode::{WireEncode, WireEncodingKind};

@@ -1,5 +1,9 @@
 const UTF8_DECODER = new TextDecoder("utf-8");
 const UTF8_ENCODER = new TextEncoder();
+// 16 is where the two curves cross: below it building the string wins on time,
+// above it TextDecoder does. Allocation favours the fast path at every length.
+const ASCII_FAST_PATH_LIMIT = 16;
+const ASCII_SCRATCH: number[] = [];
 
 type TypedArrayConstructor<T extends ArrayBufferView> = {
   new (buffer: ArrayBufferLike, byteOffset: number, length: number): T;
@@ -10,67 +14,131 @@ type TypedArrayConstructor<T extends ArrayBufferView> = {
 export class WireReader {
   private view: DataView;
   private offset: number;
+  /**
+   * True when the view points at wasm memory the caller still owns, rather
+   * than at a private copy.
+   *
+   * Reads that would otherwise hand out a view over that memory copy instead,
+   * so a returned array cannot outlive the buffer it borrows from. Everything
+   * else — scalars, strings, `readBytes` — already produces owned values.
+   */
+  private borrowed: boolean;
+  private bytes: Uint8Array | null = null;
+  /** The reader's buffer, held directly to keep `view.buffer` off hot paths. */
+  private bufferRef: ArrayBuffer;
+  /**
+   * `limit` is the end of the payload. A bounded `DataView` would enforce it
+   * for free, but allocating one per call costs more than the checks do.
+   */
+  private limit: number;
 
-  constructor(buffer: ArrayBuffer, offset = 0) {
+  constructor(
+    buffer: ArrayBuffer,
+    offset = 0,
+    borrowed = false,
+    length?: number
+  ) {
     this.view = new DataView(buffer);
+    this.bufferRef = buffer;
     this.offset = offset;
+    this.limit = length === undefined ? buffer.byteLength : offset + length;
+    this.borrowed = borrowed;
+  }
+
+  /** Points an existing reader at another payload, reusing the instance. */
+  reset(
+    buffer: ArrayBuffer,
+    offset: number,
+    length: number,
+    borrowed: boolean
+  ): this {
+    // Comparing `this.view.buffer` here would read two accessors per call.
+    if (this.bufferRef !== buffer) {
+      this.view = new DataView(buffer);
+      this.bufferRef = buffer;
+      // `asBytes` only notices detachment, not a swap between two live
+      // buffers, so the cache has to be dropped here.
+      this.bytes = null;
+    }
+    this.offset = offset;
+    this.limit = offset + length;
+    this.borrowed = borrowed;
+    return this;
+  }
+
+  /**
+   * Detaches the reader from whatever it was pointing at, so a reader that
+   * outlives its payload throws rather than reading freed memory. Costs
+   * nothing — the empty view is shared.
+   */
+  invalidate(): void {
+    // Every read goes through `take`, so an empty window is enough to make one
+    // throw. Keeping the view and buffer lets the next `reset` reuse them.
+    this.offset = 0;
+    this.limit = 0;
+  }
+
+  /**
+   * Reserves `byteLength` bytes and returns their absolute index in the
+   * underlying buffer. Reads that build a typed array bypass the view's own
+   * bounds check, so they go through here to keep it.
+   */
+  private take(byteLength: number): number {
+    const start = this.offset;
+    const end = start + byteLength;
+    if (byteLength < 0 || end > this.limit) {
+      throw new RangeError("Wire read past the end of the payload");
+    }
+    this.offset = end;
+    return start;
   }
 
   readBool(): boolean {
-    const value = this.view.getUint8(this.offset);
-    this.offset += 1;
+    const value = this.view.getUint8(this.take(1));
     return value !== 0;
   }
 
   skip(n: number): void {
-    this.offset += n;
+    this.take(n);
   }
 
   readI8(): number {
-    const value = this.view.getInt8(this.offset);
-    this.offset += 1;
+    const value = this.view.getInt8(this.take(1));
     return value;
   }
 
   readU8(): number {
-    const value = this.view.getUint8(this.offset);
-    this.offset += 1;
+    const value = this.view.getUint8(this.take(1));
     return value;
   }
 
   readI16(): number {
-    const value = this.view.getInt16(this.offset, true);
-    this.offset += 2;
+    const value = this.view.getInt16(this.take(2), true);
     return value;
   }
 
   readU16(): number {
-    const value = this.view.getUint16(this.offset, true);
-    this.offset += 2;
+    const value = this.view.getUint16(this.take(2), true);
     return value;
   }
 
   readI32(): number {
-    const value = this.view.getInt32(this.offset, true);
-    this.offset += 4;
+    const value = this.view.getInt32(this.take(4), true);
     return value;
   }
 
   readU32(): number {
-    const value = this.view.getUint32(this.offset, true);
-    this.offset += 4;
+    const value = this.view.getUint32(this.take(4), true);
     return value;
   }
 
   readI64(): bigint {
-    const value = this.view.getBigInt64(this.offset, true);
-    this.offset += 8;
+    const value = this.view.getBigInt64(this.take(8), true);
     return value;
   }
 
   readU64(): bigint {
-    const value = this.view.getBigUint64(this.offset, true);
-    this.offset += 8;
+    const value = this.view.getBigUint64(this.take(8), true);
     return value;
   }
 
@@ -83,60 +151,86 @@ export class WireReader {
   }
 
   readF32(): number {
-    const value = this.view.getFloat32(this.offset, true);
-    this.offset += 4;
+    const value = this.view.getFloat32(this.take(4), true);
     return value;
   }
 
   readF64(): number {
-    const value = this.view.getFloat64(this.offset, true);
-    this.offset += 8;
+    const value = this.view.getFloat64(this.take(8), true);
     return value;
   }
 
   readString(): string {
     const len = this.readU32();
-    const bytes = new Uint8Array(this.view.buffer, this.offset, len);
-    this.offset += len;
-    return UTF8_DECODER.decode(bytes);
+    const start = this.take(len);
+    // Short ASCII strings are cheaper to build from their char codes than to
+    // decode, on both time and allocation. Every code has to be passed at
+    // once: appending one at a time builds a cons-string chain that allocates
+    // more than TextDecoder does.
+    if (len <= ASCII_FAST_PATH_LIMIT) {
+      const bytes = this.asBytes();
+      const scratch = ASCII_SCRATCH;
+      let i = 0;
+      for (; i < len; i++) {
+        const byte = bytes[start + i]!;
+        if (byte > 0x7f) break;
+        scratch[i] = byte;
+      }
+      if (i === len) {
+        scratch.length = len;
+        return String.fromCharCode.apply(null, scratch);
+      }
+    }
+    return UTF8_DECODER.decode(new Uint8Array(this.view.buffer, start, len));
+  }
+
+  /** Whole-buffer view of the reader's memory, for the fast path above. */
+  private asBytes(): Uint8Array {
+    let bytes = this.bytes;
+    if (bytes === null || bytes.byteLength === 0) {
+      bytes = new Uint8Array(this.bufferRef);
+      this.bytes = bytes;
+    }
+    return bytes;
   }
 
   readBytes(): Uint8Array {
     const len = this.readU32();
-    const bytes = new Uint8Array(this.view.buffer, this.offset, len);
-    this.offset += len;
+    const bytes = new Uint8Array(this.view.buffer, this.take(len), len);
     return bytes.slice();
   }
 
   readI8Array(): Int8Array {
     const len = this.readU32();
-    const result = new Int8Array(this.view.buffer, this.offset, len);
-    this.offset += len;
-    return result;
+    const result = new Int8Array(this.view.buffer, this.take(len), len);
+    return this.borrowed ? result.slice() : result;
   }
 
   readU8Array(): Uint8Array {
     const len = this.readU32();
-    const result = new Uint8Array(this.view.buffer, this.offset, len);
-    this.offset += len;
-    return result;
+    const result = new Uint8Array(this.view.buffer, this.take(len), len);
+    return this.borrowed ? result.slice() : result;
   }
 
   readBoolArray(): boolean[] {
     const len = this.readU32();
-    const values = new Uint8Array(this.view.buffer, this.offset, len);
-    this.offset += len;
-    return Array.from(values, (value) => value !== 0);
+    const values = new Uint8Array(this.view.buffer, this.take(len), len);
+    // `Array.from` with a mapper walks a TypedArray through the iterator
+    // protocol, which costs an order of magnitude more than indexing it.
+    const result = new Array<boolean>(len);
+    for (let index = 0; index < len; index++) {
+      result[index] = values[index] !== 0;
+    }
+    return result;
   }
 
   private readTypedArray<T extends ArrayBufferView>(
     typedArray: TypedArrayConstructor<T>,
     len: number
   ): T {
-    const byteOffset = this.offset;
     const byteLength = len * typedArray.BYTES_PER_ELEMENT;
-    this.offset += byteLength;
-    if (byteOffset % typedArray.BYTES_PER_ELEMENT === 0) {
+    const byteOffset = this.take(byteLength);
+    if (!this.borrowed && byteOffset % typedArray.BYTES_PER_ELEMENT === 0) {
       return new typedArray(this.view.buffer, byteOffset, len);
     }
     const copy = new Uint8Array(this.view.buffer, byteOffset, byteLength).slice().buffer;
@@ -201,9 +295,10 @@ export class WireReader {
 
   readArray<T>(readElement: () => T): T[] {
     const len = this.readU32();
-    const result: T[] = [];
-    for (let i = 0; i < len; i++) {
-      result.push(readElement());
+    // The length is known, so the array is sized once rather than grown.
+    const result = new Array<T>(len);
+    for (let index = 0; index < len; index++) {
+      result[index] = readElement();
     }
     return result;
   }
@@ -313,8 +408,14 @@ export function matchWireResult<T, E, R>(
 }
 
 export class WireWriter {
-  private localBuffer: ArrayBuffer;
-  private localView: DataView;
+  /**
+   * Only used when the writer is not bound to a wasm region. A region-bound
+   * writer never reads either, so both are left unallocated for it — they are
+   * two allocations per call on the callback trampoline, which builds one
+   * writer per element.
+   */
+  private localBuffer: ArrayBuffer | null;
+  private localView: DataView | null;
   private wasmAllocator: WasmWireWriterAllocator | null;
   private wasmPtr: number;
   private allocationSize: number;
@@ -322,10 +423,11 @@ export class WireWriter {
   private cachedWasmView: DataView | null;
   private cachedWasmBuffer: ArrayBuffer | null;
 
-  constructor(initialSize = 256) {
+  constructor(initialSize = 256, allocateLocal = true) {
     const normalizedSize = Math.max(initialSize, 1);
-    this.localBuffer = new ArrayBuffer(normalizedSize);
-    this.localView = new DataView(this.localBuffer);
+    this.localBuffer = allocateLocal ? new ArrayBuffer(normalizedSize) : null;
+    this.localView =
+      this.localBuffer === null ? null : new DataView(this.localBuffer);
     this.wasmAllocator = null;
     this.wasmPtr = 0;
     this.allocationSize = normalizedSize;
@@ -350,16 +452,30 @@ export class WireWriter {
     return writer;
   }
 
-  static withWasmRegion(pointer: number, size: number, buffer: () => ArrayBuffer): WireWriter {
-    const writer = new WireWriter(1);
-    writer.wasmAllocator = {
-      alloc: () => pointer,
+  /** Allocator for a caller-owned region: it can only report the buffer. */
+  static fixedRegionAllocator(buffer: () => ArrayBuffer): WasmWireWriterAllocator {
+    return {
+      alloc: () => {
+        throw new Error("Fixed WASM region cannot allocate");
+      },
       realloc: () => {
         throw new Error("Fixed WASM region exceeded its capacity");
       },
       free: () => {},
       buffer,
     };
+  }
+
+  static withWasmRegion(
+    pointer: number,
+    size: number,
+    buffer: () => ArrayBuffer,
+    allocator?: WasmWireWriterAllocator
+  ): WireWriter {
+    const writer = new WireWriter(1, false);
+    // `allocator` lets the caller hand in one shared object instead of building
+    // a fresh one with four closures per call.
+    writer.wasmAllocator = allocator ?? WireWriter.fixedRegionAllocator(buffer);
     writer.wasmPtr = pointer;
     writer.allocationSize = size;
     return writer;
@@ -385,17 +501,30 @@ export class WireWriter {
     return this.allocationSize;
   }
 
+  private ensureLocalBuffer(): ArrayBuffer {
+    let buffer = this.localBuffer;
+    if (buffer === null) {
+      buffer = new ArrayBuffer(Math.max(this.allocationSize, 1));
+      this.localBuffer = buffer;
+      this.localView = new DataView(buffer);
+    }
+    return buffer;
+  }
+
   private inWasmMemory(): boolean {
     return this.wasmAllocator !== null;
   }
 
   private currentBuffer(): ArrayBuffer {
-    return this.inWasmMemory() ? this.wasmAllocator!.buffer() : this.localBuffer;
+    return this.inWasmMemory()
+      ? this.wasmAllocator!.buffer()
+      : this.ensureLocalBuffer();
   }
 
   private currentView(): DataView {
     if (!this.inWasmMemory()) {
-      return this.localView;
+      this.ensureLocalBuffer();
+      return this.localView as DataView;
     }
     const buffer = this.wasmAllocator!.buffer();
     if (this.cachedWasmBuffer !== buffer) {
@@ -431,9 +560,9 @@ export class WireWriter {
       return;
     }
     const newBuffer = new ArrayBuffer(newSize);
-    new Uint8Array(newBuffer).set(new Uint8Array(this.localBuffer));
+    new Uint8Array(newBuffer).set(new Uint8Array(this.ensureLocalBuffer()));
     this.localBuffer = newBuffer;
-    this.localView = new DataView(this.localBuffer);
+    this.localView = new DataView(newBuffer);
     this.allocationSize = newSize;
   }
 

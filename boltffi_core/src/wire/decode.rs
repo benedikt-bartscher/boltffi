@@ -71,6 +71,20 @@ pub trait WireDecode: Sized {
     fn decode_from(buf: &[u8]) -> DecodeResult<Self>;
 }
 
+/// Borrow the payload of an encoded byte buffer instead of copying it out.
+///
+/// Decoding into `Vec<u8>` allocates and copies the whole payload. A `&[u8]`
+/// parameter needs neither: the bytes are already contiguous behind their
+/// length prefix, so the caller can borrow them for as long as the encoded
+/// buffer lives. Trailing bytes are ignored, as they are by [`decode`].
+///
+/// [`decode`]: crate::wire::decode
+pub fn decode_bytes(buf: &[u8]) -> Result<&[u8], DecodeError> {
+    let mut reader = WireReader::new(buf);
+    let count = reader.read_value::<u32>()? as usize;
+    reader.read_exact(count)
+}
+
 struct WireReader<'buffer> {
     buffer: &'buffer [u8],
     offset: usize,
@@ -97,7 +111,11 @@ impl<'buffer> WireReader<'buffer> {
     #[inline]
     fn read_exact(&mut self, byte_count: usize) -> Result<&'buffer [u8], DecodeError> {
         let start = self.offset;
-        let end = start + byte_count;
+        // `usize` is 32 bits on wasm32, so a hostile length read off the wire
+        // can overflow this and trap where it should report a decode error.
+        let end = start
+            .checked_add(byte_count)
+            .ok_or(DecodeError::BufferTooSmall)?;
         let bytes = self
             .buffer
             .get(start..end)
@@ -469,6 +487,65 @@ impl_wire_tuple_decode!(A, B, C, D, E, F, G, H, I, J, K, L);
 
 #[cfg(test)]
 mod tests {
+    use super::decode_bytes;
+    use crate::wire::encode;
+
+    #[test]
+    fn decode_bytes_borrows_the_payload_without_copying() {
+        let encoded = encode(&vec![1u8, 2, 3, 4]);
+        let borrowed = decode_bytes(&encoded).expect("borrowed payload");
+
+        assert_eq!(borrowed, &[1, 2, 3, 4]);
+        // The whole point: the slice points into `encoded`, it is not a copy.
+        assert!(core::ptr::eq(borrowed.as_ptr(), encoded[4..].as_ptr()));
+    }
+
+    #[test]
+    fn decode_bytes_matches_the_owned_decoder() {
+        for payload in [vec![], vec![0u8], vec![7u8; 300]] {
+            let encoded = encode(&payload);
+            let owned: Vec<u8> = crate::wire::decode(&encoded).expect("owned decode");
+            assert_eq!(decode_bytes(&encoded).expect("borrowed decode"), &owned[..]);
+        }
+    }
+
+    #[test]
+    fn decode_bytes_ignores_trailing_bytes_like_decode() {
+        let mut encoded = encode(&vec![9u8, 8]);
+        encoded.extend_from_slice(&[0xff; 16]);
+
+        assert_eq!(decode_bytes(&encoded).expect("borrowed payload"), &[9, 8]);
+    }
+
+    #[test]
+    fn decode_bytes_rejects_a_length_the_buffer_cannot_satisfy() {
+        // A truncated or malformed payload must not hand out neighbouring bytes.
+        let mut encoded = encode(&vec![1u8, 2, 3, 4]);
+        encoded[0] = 0xff;
+
+        assert!(decode_bytes(&encoded).is_err());
+    }
+
+    #[test]
+    fn decode_bytes_rejects_the_largest_length_without_overflowing() {
+        // `usize` is 32 bits on wasm32, where `offset + u32::MAX` wraps and an
+        // overflow-checked build traps instead of reporting a decode error.
+        // On a 64-bit host the addition cannot overflow, so what this asserts
+        // here is only that the largest representable length is rejected — the
+        // guard itself is exercised on wasm32.
+        let mut encoded = encode(&vec![1u8, 2, 3, 4]);
+        encoded[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        assert!(decode_bytes(&encoded).is_err());
+    }
+
+    #[test]
+    fn decode_bytes_rejects_a_buffer_too_short_for_the_prefix() {
+        for truncated in [&[][..], &[0][..], &[0, 0, 0][..]] {
+            assert!(decode_bytes(truncated).is_err());
+        }
+    }
+
     use super::*;
     use crate::wire::encode::WireEncode;
 

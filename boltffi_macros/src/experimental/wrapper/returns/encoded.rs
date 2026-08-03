@@ -171,7 +171,7 @@ impl Render<Wasm32, Empty<Wasm32>> for Renderer {
             wasm32::BufferShape::Packed => Ok(Tokens {
                 value_type: quote! { u64 },
                 return_type: quote! { -> u64 },
-                value: quote! { ::boltffi::__private::FfiBuf::default().into_packed() },
+                value: quote! { ::boltffi::__private::FfiBuf::EMPTY_PACKED },
             }),
             wasm32::BufferShape::Slice => {
                 Err(Error::UnsupportedExpansion("wasm encoded return shape"))

@@ -242,7 +242,7 @@ fn print_config_summary(summary: &ConfigSummary, config_path: &Path, overlay_pat
             println!(
                 "  targets.dart.native_architectures: {}",
                 config
-                    .dart_native_architectures()
+                    .dart_native_targets()
                     .iter()
                     .filter_map(|target| target.dart_native_name())
                     .collect::<Vec<_>>()

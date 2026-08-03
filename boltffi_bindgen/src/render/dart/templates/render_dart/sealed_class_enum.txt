@@ -1,3 +1,12 @@
+{%- for func in dart_enum.constructors %}
+{% include "extern_function.txt" %}
+{%- endfor %}
+{%- for func in dart_enum.methods %}
+{% include "extern_function.txt" %}
+{%- endfor %}
+{%- if let Some(doc) = dart_enum.doc %}
+{{ super::to_dart_doc(doc) }}
+{%- endif%}
 sealed class {{ dart_enum.name }}{% if dart_enum.is_error %} implements Exception{% endif %} {
   const {{ dart_enum.name }}();
 {% for variant in dart_enum.variants %}
@@ -5,50 +14,29 @@ sealed class {{ dart_enum.name }}{% if dart_enum.is_error %} implements Exceptio
 {%- if variant.fields.len() > 0 -%}
   {
 {%- for field in variant.fields %}
-    required {{ field.dart_type.dart_type() }} {{ field.name }},
+    required {{ field.ty.dart_type() }} {{ field.name }},
 {%- endfor %}
   }
 {%- endif -%}
   ) = {{ variant.class_name }};
 {% endfor %}
-{%- for ctor in dart_enum.constructors %}
-{%- match ctor.kind %}
-{% when super::DartConstructorKind::Default %}
-  factory {{ dart_enum.name }}(
-{%- for param in ctor.params %}
-    {{ param.ty.dart_type() }} {{ param.name }},
-{%- endfor %}
-  ) {}
-{% when super::DartConstructorKind::Named with { name: ctor_name } %}
-  factory {{ dart_enum.name }}.{{ ctor_name }}(
-{%- for param in ctor.params %}
-    {{ param.ty.dart_type() }} {{ param.name }},
-{%- endfor %}
-  ) {}
-{% endmatch -%}
-{%- endfor %}
-{%- for meth in dart_enum.methods %}
-  {{ meth.ret_ty.dart_type() }} {{ meth.name }}(
-{%- for param in meth.params %}
-    {{ param.ty.dart_type() }} {{ param.name }},
-{%- endfor %}
-  ) {}
-{%- endfor %}
-  factory {{ dart_enum.name }}._m$wireDecode(_$$WireReader _p$reader) {
-    final tag = {{ dart_enum.tag_reader_read("_p$reader") }};
+  @pragma('vm:prefer-inline')
+  factory {{ dart_enum.name }}._m$wireDecode(_$$BoltWireDecoder _p$reader) {
+    final l$tag = _p$reader.readI32();
 
-    return switch (tag) {
+    return switch (l$tag) {
 {%- for variant in dart_enum.variants %}
-      {{ variant.tag }} => {{ dart_enum.name }}.{{ variant.name }}(
+      {{ loop.index0 }} => {{ dart_enum.name }}.{{ variant.name }}(
 {%- for field in variant.fields %}
         {{ field.name }}: {{ field.wire_decode_expr("_p$reader") }},
 {%- endfor %}
       ),
 {%- endfor %}
-      _ => throw ArgumentError('Unknown {{ dart_enum.name }} tag: $tag'),
+      _ => throw ArgumentError('Unknown {{ dart_enum.name }} tag: ${l$tag}'),
     };
   }
 
+  @pragma('vm:prefer-inline')
   int _m$wireEncodedSize() => 4 + switch (this) {
 {%- for variant in dart_enum.variants %}
     {{ variant.class_name }}(
@@ -64,7 +52,8 @@ sealed class {{ dart_enum.name }}{% if dart_enum.is_error %} implements Exceptio
 {%- endfor %}
   };
 
-  void _m$wireEncode(_$$WireWriter _p$writer) {
+  @pragma('vm:prefer-inline')
+  void _m$wireEncode(_$$BoltWireEncoder _p$writer) {
     switch (this) {
 {%- for variant in dart_enum.variants %}
       case {{ variant.class_name }}(
@@ -72,18 +61,28 @@ sealed class {{ dart_enum.name }}{% if dart_enum.is_error %} implements Exceptio
         :final {{ field.name }}{% if !loop.last %}, {% endif %}
 {%- endfor -%}
       ):
-        {{ dart_enum.tag_writer_write(variant, "_p$writer") }}
+        _p$writer.writeI32({{ loop.index0 }});
 {%- for field in variant.fields %}
         {{ field.wire_encode_expr("_p$writer")|indent(8)|trim }}
 {%- endfor %}
 {%- endfor %}
     }
   }
+{% for func in dart_enum.constructors %}
+{%- filter indent(2, true) %}
+{%- include "callable.txt" -%}
+{%- endfilter %}
+{% endfor -%}
+{%- for func in dart_enum.methods %}
+{%- filter indent(2, true) %}
+{%- include "callable.txt" -%}
+{%- endfilter %}
+{% endfor -%}
 }
 {% for variant in dart_enum.variants %}
 final class {{ variant.class_name }} extends {{ dart_enum.name }} {
   {%- for field in variant.fields %}
-  final {{ field.dart_type.dart_type() }} {{ field.name }};
+  final {{ field.ty.dart_type() }} {{ field.name }};
   {%- endfor %}
 
   const {{ variant.class_name }}({%- if variant.fields.len() > 0 %}{
@@ -93,8 +92,28 @@ final class {{ variant.class_name }} extends {{ dart_enum.name }} {
   }{%- endif %});
 
   @override
+  int get hashCode{% if !variant.fields.is_empty()%} {
+    int _l$result = 1;
+{%- for field in variant.fields %}
+    _l$result = 31 * _l$result + {{ field.ty.hash_expr(&field.name) }};
+{%- endfor %}
+    return _l$result;
+  }{% else %} => runtimeType.hashCode;{% endif %}
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+
+    return other is {{ variant.class_name }}{% if !variant.fields.is_empty() %} && {% for field in variant.fields %}{{ field.field_cmp_expr("other") }}{% if !loop.last %} && {% endif %}{% endfor %}{% endif %};
+  }
+
+  @override
   String toString() {
-    return "{{ dart_enum.name }}.{{ variant.name }} { {% for field in variant.fields %}{{ field.name }}=${{ field.name }}{%if !loop.last %}, {% endif %}{% endfor %} }";
+    return "{{ dart_enum.name }}.{{ variant.name }}{% if !variant.fields.is_empty() %} {
+{%- for field in variant.fields -%}
+      {{ field.name }}=${{ field.name }}{%if !loop.last %}, {% endif %}
+{%- endfor -%}
+    }{% endif %}";
   }
 }
-{% endfor %}
+{%- endfor %}

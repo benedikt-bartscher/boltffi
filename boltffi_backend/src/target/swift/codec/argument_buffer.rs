@@ -47,6 +47,11 @@ impl ArgumentBuffer {
         &self.writer
     }
 
+    /// Returns the generated identifier that owns the encoded bytes.
+    pub fn bytes(&self) -> &Identifier {
+        &self.bytes
+    }
+
     pub fn arguments(&self) -> Vec<Expression> {
         vec![
             Expression::forced(Expression::member(&self.buffer, "baseAddress")),

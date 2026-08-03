@@ -273,7 +273,21 @@ fn swift_target_renders_callback_encoded_result_returns() {
 
 #[test]
 fn swift_target_renders_callback_direct_result_returns() {
-    insta::assert_snapshot!(rendered_partial_fixture("callback/callback_status_result"));
+    let rendered = rendered_partial_fixture("callback/callback_status_result");
+
+    assert!(rendered.contains("(error as? FfiError)?.message ?? String(describing: error)"));
+    assert!(!rendered.contains("boltffiEncodeUnexpectedCallbackError(error)"));
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn swift_target_handles_unexpected_typed_callback_errors_without_forced_casts() {
+    let rendered = rendered_partial_fixture("callback/callback_typed_error_result");
+
+    assert!(rendered.contains("catch let error as LoadError"));
+    assert!(rendered.contains("boltffiEncodeUnexpectedCallbackError(error)"));
+    assert!(!rendered.contains("(error as? LoadError)!"));
 }
 
 #[test]
@@ -364,7 +378,23 @@ fn swift_target_renders_callback_method_callback_handle_returns() {
 
 #[test]
 fn swift_target_renders_async_callback_return_shapes() {
-    insta::assert_snapshot!(rendered_fixture("callback/async_callback_return_shapes"));
+    let rendered = rendered_fixture("callback/async_callback_return_shapes");
+
+    assert!(rendered.contains("catch let error as LoadError"));
+    assert!(rendered.contains("boltffiEncodeUnexpectedCallbackError(error)"));
+    assert!(!rendered.contains("(error as? LoadError)!"));
+
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn swift_target_emits_strict_unexpected_callback_error_payload_helper() {
+    let rendered =
+        rendered_swift_runtime(SourceFixture::one("callback/async_callback_return_shapes"));
+
+    assert!(rendered.contains("func boltffiEncodeUnexpectedCallbackError(_ error: Error)"));
+    assert!(rendered.contains("boltffiUnexpectedCallbackErrorMarker"));
+    assert!(rendered.contains("boltffiUnexpectedCallbackErrorVersion"));
 }
 
 #[test]

@@ -1131,16 +1131,16 @@ impl Config {
         self.targets.dart.output.clone()
     }
 
-    pub fn dart_native_architectures(&self) -> &[RustTarget] {
+    pub fn dart_native_targets(&self) -> &[RustTarget] {
         self.targets
             .dart
-            .native_architectures
+            .native_targets
             .as_deref()
             .unwrap_or(RustTarget::ALL_DART_NATIVE)
     }
 
     pub fn dart_targets(&self) -> Vec<RustTarget> {
-        self.dart_native_architectures().to_vec()
+        self.dart_native_targets().to_vec()
     }
 }
 
@@ -2522,7 +2522,7 @@ package_output = "artifacts/nuget"
 package_id = "Company.MyLib"
 namespace = "Company.MyLib.Bindings"
 target_framework = "net9.0"
-runtime_identifiers = ["current", "linux-x64"]
+runtime_identifiers = ["current", "linux-x64", "windows-aarch64"]
 "#,
         );
 
@@ -2538,10 +2538,37 @@ runtime_identifiers = ["current", "linux-x64"]
             config.csharp_requested_runtime_identifiers(),
             &[
                 crate::target::CSharpRuntimeIdentifier::Current,
-                crate::target::CSharpRuntimeIdentifier::LinuxX64
+                crate::target::CSharpRuntimeIdentifier::LinuxX64,
+                crate::target::CSharpRuntimeIdentifier::WinArm64,
             ]
         );
         assert!(config.should_process(Target::CSharp, false));
+    }
+
+    #[test]
+    fn csharp_configuration_parses_windows_arm64_aliases() {
+        for runtime_identifier in [
+            "win-arm64",
+            "windows-arm64",
+            "windows-aarch64",
+            "win-aarch64",
+        ] {
+            let config = parse_config(&format!(
+                r#"
+[package]
+name = "my-lib"
+
+[targets.csharp]
+enabled = true
+runtime_identifiers = ["{runtime_identifier}"]
+"#,
+            ));
+
+            assert_eq!(
+                config.csharp_requested_runtime_identifiers(),
+                &[crate::target::CSharpRuntimeIdentifier::WinArm64]
+            );
+        }
     }
 
     #[test]

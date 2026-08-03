@@ -2,6 +2,26 @@ import { WireReader, WireWriter } from "./wire.js";
 import type { WasmWireWriterAllocator } from "./wire.js";
 import { StreamPollManager } from "./stream.js";
 
+const EMPTY_BUFFER = new ArrayBuffer(0);
+
+/**
+ * Widens bytes to booleans.
+ *
+ * `Array.from` with a mapper walks the TypedArray through the iterator
+ * protocol, which costs an order of magnitude more than indexing it.
+ */
+function toBoolArray(bytes: Uint8Array): boolean[] {
+  const result = new Array<boolean>(bytes.length);
+  for (let index = 0; index < bytes.length; index++) {
+    result[index] = bytes[index] !== 0;
+  }
+  return result;
+}
+
+const LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+const PACKED_LOW = LITTLE_ENDIAN ? 0 : 1;
+const PACKED_HIGH = LITTLE_ENDIAN ? 1 : 0;
+
 const FFI_BUF_DESCRIPTOR_SIZE = 16;
 const FFI_STATUS_SIZE = 4;
 const OPTION_F64_NONE = 0xffff_ffff_ffff_ffffn;
@@ -178,6 +198,9 @@ export class BoltFFIModule {
   readonly asyncManager: AsyncFutureManager;
   readonly streamManager: StreamPollManager;
   private _memory: WebAssembly.Memory;
+  /** Lent out by `readPackedBuffer`, one read at a time. */
+  private readonly borrowedReader = new WireReader(EMPTY_BUFFER, 0, true, 0);
+  private borrowedReaderInUse = false;
   private _encoder: TextEncoder;
   private _decoder: TextDecoder;
   private _writerPool: Map<number, WriterAlloc[]>;
@@ -192,10 +215,16 @@ export class BoltFFIModule {
   private _cachedF32: Float32Array | null = null;
   private _cachedF64: Float64Array | null = null;
   private _cachedView: DataView | null = null;
+  private _viewProbe: Uint8Array | null = null;
+  private _memoryBuffer: ArrayBuffer | null = null;
+  private _packedStorage = new ArrayBuffer(8);
+  private _packedBits = new BigUint64Array(this._packedStorage);
+  private _packedHalves = new Uint32Array(this._packedStorage);
   private _optionF64Storage = new ArrayBuffer(8);
   private _optionF64Bits = new BigUint64Array(this._optionF64Storage);
   private _optionF64Values = new Float64Array(this._optionF64Storage);
   private _returnSlotAddr: number = 0;
+  private _regionAllocator: WasmWireWriterAllocator | null = null;
 
   constructor(
     instance: WebAssembly.Instance,
@@ -281,80 +310,134 @@ export class BoltFFIModule {
   }
 
   private getView(): DataView {
-    if (this._cachedView === null || this._cachedView.buffer !== this._memory.buffer) {
-      this._cachedView = new DataView(this._memory.buffer);
+    // `DataView.byteLength` throws when detached instead of reporting 0, so
+    // this cache cannot test itself and carries a probe.
+    const probe = this._viewProbe;
+    if (probe !== null && probe.byteLength !== 0) {
+      return this._cachedView as DataView;
     }
-    return this._cachedView;
+    const buffer = this._memory.buffer;
+    const remapped = new DataView(buffer);
+    this._cachedView = remapped;
+    this._viewProbe = new Uint8Array(buffer);
+    return remapped;
+  }
+
+  /** `memory.buffer` is an accessor; this is a field read behind a cheap check. */
+  private memoryBuffer(): ArrayBuffer {
+    this.getBytes();
+    return this._memoryBuffer as ArrayBuffer;
   }
 
   private getBytes(): Uint8Array {
-    if (this._cachedU8 === null || this._cachedU8.buffer !== this._memory.buffer) {
-      this._cachedU8 = new Uint8Array(this._memory.buffer);
+    const cached = this._cachedU8;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedU8;
+    const buffer = this._memory.buffer;
+    const remapped = new Uint8Array(buffer);
+    this._cachedU8 = remapped;
+    this._memoryBuffer = buffer;
+    return remapped;
   }
 
   private getI8(): Int8Array {
-    if (this._cachedI8 === null || this._cachedI8.buffer !== this._memory.buffer) {
-      this._cachedI8 = new Int8Array(this._memory.buffer);
+    const cached = this._cachedI8;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedI8;
+    const buffer = this._memory.buffer;
+    const remapped = new Int8Array(buffer);
+    this._cachedI8 = remapped;
+    return remapped;
   }
 
   private getI16(): Int16Array {
-    if (this._cachedI16 === null || this._cachedI16.buffer !== this._memory.buffer) {
-      this._cachedI16 = new Int16Array(this._memory.buffer);
+    const cached = this._cachedI16;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedI16;
+    const buffer = this._memory.buffer;
+    const remapped = new Int16Array(buffer);
+    this._cachedI16 = remapped;
+    return remapped;
   }
 
   private getU16(): Uint16Array {
-    if (this._cachedU16 === null || this._cachedU16.buffer !== this._memory.buffer) {
-      this._cachedU16 = new Uint16Array(this._memory.buffer);
+    const cached = this._cachedU16;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedU16;
+    const buffer = this._memory.buffer;
+    const remapped = new Uint16Array(buffer);
+    this._cachedU16 = remapped;
+    return remapped;
   }
 
   private getI32(): Int32Array {
-    if (this._cachedI32 === null || this._cachedI32.buffer !== this._memory.buffer) {
-      this._cachedI32 = new Int32Array(this._memory.buffer);
+    const cached = this._cachedI32;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedI32;
+    const buffer = this._memory.buffer;
+    const remapped = new Int32Array(buffer);
+    this._cachedI32 = remapped;
+    return remapped;
   }
 
   private getU32(): Uint32Array {
-    if (this._cachedU32 === null || this._cachedU32.buffer !== this._memory.buffer) {
-      this._cachedU32 = new Uint32Array(this._memory.buffer);
+    const cached = this._cachedU32;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedU32;
+    const buffer = this._memory.buffer;
+    const remapped = new Uint32Array(buffer);
+    this._cachedU32 = remapped;
+    return remapped;
   }
 
   private getI64(): BigInt64Array {
-    if (this._cachedI64 === null || this._cachedI64.buffer !== this._memory.buffer) {
-      this._cachedI64 = new BigInt64Array(this._memory.buffer);
+    const cached = this._cachedI64;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedI64;
+    const buffer = this._memory.buffer;
+    const remapped = new BigInt64Array(buffer);
+    this._cachedI64 = remapped;
+    return remapped;
   }
 
   private getU64(): BigUint64Array {
-    if (this._cachedU64 === null || this._cachedU64.buffer !== this._memory.buffer) {
-      this._cachedU64 = new BigUint64Array(this._memory.buffer);
+    const cached = this._cachedU64;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedU64;
+    const buffer = this._memory.buffer;
+    const remapped = new BigUint64Array(buffer);
+    this._cachedU64 = remapped;
+    return remapped;
   }
 
   private getF32(): Float32Array {
-    if (this._cachedF32 === null || this._cachedF32.buffer !== this._memory.buffer) {
-      this._cachedF32 = new Float32Array(this._memory.buffer);
+    const cached = this._cachedF32;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedF32;
+    const buffer = this._memory.buffer;
+    const remapped = new Float32Array(buffer);
+    this._cachedF32 = remapped;
+    return remapped;
   }
 
   private getF64(): Float64Array {
-    if (this._cachedF64 === null || this._cachedF64.buffer !== this._memory.buffer) {
-      this._cachedF64 = new Float64Array(this._memory.buffer);
+    const cached = this._cachedF64;
+    if (cached !== null && cached.byteLength !== 0) {
+      return cached;
     }
-    return this._cachedF64;
+    const buffer = this._memory.buffer;
+    const remapped = new Float64Array(buffer);
+    this._cachedF64 = remapped;
+    return remapped;
   }
 
   allocString(value: string): StringAlloc {
@@ -462,7 +545,7 @@ export class BoltFFIModule {
   }
 
   borrowBoolArray(ptr: number, len: number): boolean[] {
-    return Array.from(this.getBytes().subarray(ptr, ptr + len), (value) => value !== 0);
+    return toBoolArray(this.getBytes().subarray(ptr, ptr + len));
   }
 
   borrowI8Array(ptr: number, len: number): Int8Array {
@@ -725,7 +808,14 @@ export class BoltFFIModule {
   }
 
   writerFromMemory(ptr: number, size: number): WriterAlloc {
-    return WireWriter.withWasmRegion(ptr, size, () => this._memory.buffer);
+    // Callback trampolines call this once per element, so the allocator is
+    // built once and shared rather than rebuilt with four closures per call.
+    let allocator = this._regionAllocator;
+    if (allocator === null) {
+      allocator = WireWriter.fixedRegionAllocator(() => this._memory.buffer);
+      this._regionAllocator = allocator;
+    }
+    return WireWriter.withWasmRegion(ptr, size, allocator.buffer, allocator);
   }
 
   allocBufDescriptor(): number {
@@ -853,8 +943,7 @@ export class BoltFFIModule {
   takeBufBoolArray(bufPtr: number): boolean[] {
     const { ptr, len } = this.readBufDescriptor(bufPtr);
     if (ptr === 0) return [];
-    const bytes = this.getBytes().subarray(ptr, ptr + len);
-    return Array.from(bytes, (value) => value !== 0);
+    return toBoolArray(this.getBytes().subarray(ptr, ptr + len));
   }
 
   takeBufStructArray<T>(bufPtr: number, stride: number, decode: (view: DataView, offset: number) => T): T[] {
@@ -863,7 +952,11 @@ export class BoltFFIModule {
     const copy = new Uint8Array(this._memory.buffer, ptr, byteLen).slice();
     const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
     const count = (byteLen / stride) | 0;
-    return Array.from({ length: count }, (_, index) => decode(view, index * stride));
+    const result = new Array<T>(count);
+    for (let index = 0; index < count; index++) {
+      result[index] = decode(view, index * stride);
+    }
+    return result;
   }
 
   writeToMemory(ptr: number, data: Uint8Array): void {
@@ -888,10 +981,13 @@ export class BoltFFIModule {
   }
 
   private unpackPacked(packed: bigint): { pointer: number; length: number } {
-    return {
-      pointer: Number(packed & 0xffff_ffffn),
-      length: Number((packed >> 32n) & 0xffff_ffffn),
-    };
+    // Masking and shifting a BigInt allocates an intermediate per operation.
+    // Storing it once and reading the halves as u32 through an aliased view
+    // does no BigInt arithmetic at all — but the aliasing is host-endian, so
+    // which half is which is settled once, at load.
+    this._packedBits[0] = packed;
+    const halves = this._packedHalves;
+    return { pointer: halves[PACKED_LOW], length: halves[PACKED_HIGH] };
   }
 
   private freePacked(pointer: number, length: number): void {
@@ -1075,13 +1171,13 @@ export class BoltFFIModule {
       throw new Error("Invalid packed wire string");
     }
     try {
+      const bytes = this.getBytes();
       const payloadLength = this.getView().getUint32(pointer, true);
-      if (payloadLength !== length - 4) {
+      if (payloadLength !== length - 4 || pointer + length > bytes.length) {
         throw new Error("Invalid packed wire string length");
       }
-      return this._decoder.decode(
-        new Uint8Array(this._memory.buffer, pointer + 4, payloadLength)
-      );
+      const start = pointer + 4;
+      return this._decoder.decode(bytes.subarray(start, start + payloadLength));
     } finally {
       this.freePacked(pointer, length);
     }
@@ -1093,17 +1189,65 @@ export class BoltFFIModule {
       throw new Error("Invalid packed wire bytes");
     }
     try {
+      const bytes = this.getBytes();
       const payloadLength = this.getView().getUint32(pointer, true);
-      if (payloadLength !== length - 4) {
+      if (payloadLength !== length - 4 || pointer + length > bytes.length) {
         throw new Error("Invalid packed wire bytes length");
       }
-      return new Uint8Array(this._memory.buffer, pointer + 4, payloadLength).slice();
+      const start = pointer + 4;
+      // One allocation: building a view and then copying it made two.
+      return bytes.slice(start, start + payloadLength);
     } finally {
       this.freePacked(pointer, length);
     }
   }
 
 
+
+  /**
+   * Reads a packed return in place, without copying it out of wasm memory.
+   *
+   * `takePackedBuffer` copies the payload into a fresh `ArrayBuffer` and wraps
+   * it in a new `DataView` on every call, which dominates the cost of decoding
+   * a small record. Here the reader borrows wasm memory instead, and the
+   * payload is freed once `read` returns.
+   *
+   * Safe because the reader is in borrowed mode: reads that would hand out a
+   * view over that memory copy instead, so nothing the callback returns can
+   * outlive the free below. The reader spans exactly the payload, so a
+   * malformed length throws rather than reading past it, and it is detached
+   * afterwards, so a reader that escapes `read` throws rather than reading
+   * freed memory. `read` returning a promise is still the caller's problem:
+   * the payload is freed when `read` returns, not when the promise settles.
+   */
+  readPackedBuffer<T>(packed: bigint, read: (reader: WireReader) => T): T {
+    const { pointer, length } = this.unpackPacked(packed);
+    const empty = pointer === 0 || length === 0;
+    const buffer = empty ? EMPTY_BUFFER : this.memoryBuffer();
+    const start = empty ? 0 : pointer;
+    const size = empty ? 0 : length;
+
+    // A nested call would reset the reader the outer one is still using, so it
+    // gets its own. Generated codecs never nest, but the method is public.
+    if (this.borrowedReaderInUse) {
+      const reader = new WireReader(buffer, start, true, size);
+      try {
+        return read(reader);
+      } finally {
+        reader.invalidate();
+        if (!empty) this.freePacked(pointer, length);
+      }
+    }
+
+    this.borrowedReaderInUse = true;
+    try {
+      return read(this.borrowedReader.reset(buffer, start, size, true));
+    } finally {
+      this.borrowedReader.invalidate();
+      this.borrowedReaderInUse = false;
+      if (!empty) this.freePacked(pointer, length);
+    }
+  }
 
   takePackedBuffer(packed: bigint): WireReader {
     const { pointer, length } = this.unpackPacked(packed);
@@ -1117,8 +1261,7 @@ export class BoltFFIModule {
   }
 
   takePackedI8Array(packed: bigint): Int8Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new Int8Array(0);
     const result = this.getI8().subarray(pointer, pointer + byteLen).slice();
     this.exports.boltffi_wasm_free_string_return(pointer, byteLen);
@@ -1126,8 +1269,7 @@ export class BoltFFIModule {
   }
 
   takePackedU8Array(packed: bigint): Uint8Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new Uint8Array(0);
     const result = this.getBytes().subarray(pointer, pointer + byteLen).slice();
     this.exports.boltffi_wasm_free_string_return(pointer, byteLen);
@@ -1240,8 +1382,7 @@ export class BoltFFIModule {
   takeSlotBoolArray(): boolean[] {
     const { ptr, len, cap, align } = this.readSlot();
     if (ptr === 0) return [];
-    const bytes = this.getBytes().subarray(ptr, ptr + len);
-    const result = Array.from(bytes, (b) => b !== 0);
+    const result = toBoolArray(this.getBytes().subarray(ptr, ptr + len));
     this.freeSlotBuf(ptr, cap, align);
     return result;
   }
@@ -1271,8 +1412,7 @@ export class BoltFFIModule {
   }
 
   takePackedI16Array(packed: bigint): Int16Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new Int16Array(0);
     const elemCount = byteLen / 2;
     const result = new Int16Array(this._memory.buffer, pointer, elemCount).slice();
@@ -1281,8 +1421,7 @@ export class BoltFFIModule {
   }
 
   takePackedU16Array(packed: bigint): Uint16Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new Uint16Array(0);
     const elemCount = byteLen / 2;
     const result = new Uint16Array(this._memory.buffer, pointer, elemCount).slice();
@@ -1291,8 +1430,7 @@ export class BoltFFIModule {
   }
 
   takePackedI32Array(packed: bigint): Int32Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new Int32Array(0);
     const elemCount = byteLen / 4;
     const result = this.getI32().subarray(pointer / 4, pointer / 4 + elemCount).slice();
@@ -1301,8 +1439,7 @@ export class BoltFFIModule {
   }
 
   takePackedU32Array(packed: bigint): Uint32Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new Uint32Array(0);
     const elemCount = byteLen / 4;
     const result = this.getU32().subarray(pointer / 4, pointer / 4 + elemCount).slice();
@@ -1311,8 +1448,7 @@ export class BoltFFIModule {
   }
 
   takePackedI64Array(packed: bigint): BigInt64Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new BigInt64Array(0);
     const result = new BigInt64Array(this._memory.buffer, pointer, byteLen / 8).slice();
     this.exports.boltffi_wasm_free_string_return(pointer, byteLen);
@@ -1320,8 +1456,7 @@ export class BoltFFIModule {
   }
 
   takePackedU64Array(packed: bigint): BigUint64Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new BigUint64Array(0);
     const result = new BigUint64Array(this._memory.buffer, pointer, byteLen / 8).slice();
     this.exports.boltffi_wasm_free_string_return(pointer, byteLen);
@@ -1329,8 +1464,7 @@ export class BoltFFIModule {
   }
 
   takePackedF32Array(packed: bigint): Float32Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new Float32Array(0);
     const elemCount = byteLen / 4;
     const result = this.getF32().subarray(pointer / 4, pointer / 4 + elemCount).slice();
@@ -1339,8 +1473,7 @@ export class BoltFFIModule {
   }
 
   takePackedF64Array(packed: bigint): Float64Array {
-    const pointer = Number(packed & 0xffff_ffffn);
-    const byteLen = Number((packed >> 32n) & 0xffff_ffffn);
+    const { pointer, length: byteLen } = this.unpackPacked(packed);
     if (pointer === 0 || byteLen === 0) return new Float64Array(0);
     const elemCount = byteLen / 8;
     const result = this.getF64().subarray(pointer / 8, pointer / 8 + elemCount).slice();

@@ -1556,19 +1556,21 @@ impl Return {
                     .into_iter()
                     .collect::<ArgumentList>(),
             ))],
-            ReturnConversion::Encoded { reader, decode } => vec![
-                Statement::constant(
-                    reader.clone(),
-                    Expression::call(
-                        Expression::identifier(Identifier::known("_module")),
-                        Identifier::known("takePackedBuffer"),
-                        [call.cast(TypeName::bigint())]
-                            .into_iter()
-                            .collect::<ArgumentList>(),
-                    ),
-                ),
-                Statement::return_value(decode.clone()),
-            ],
+            // Decoded in place rather than copied out: `readPackedBuffer` lends
+            // the reader wasm memory and frees the payload once the codec
+            // returns, which avoids an ArrayBuffer and a DataView per call.
+            ReturnConversion::Encoded { reader, decode } => {
+                vec![Statement::return_value(Expression::call(
+                    Expression::identifier(Identifier::known("_module")),
+                    Identifier::known("readPackedBuffer"),
+                    [
+                        call.cast(TypeName::bigint()),
+                        Expression::parameter_lambda(reader.clone(), decode.clone()),
+                    ]
+                    .into_iter()
+                    .collect::<ArgumentList>(),
+                ))]
+            }
             ReturnConversion::PackedOptional { take } => {
                 vec![Statement::return_value(Expression::call(
                     Expression::identifier(Identifier::known("_module")),

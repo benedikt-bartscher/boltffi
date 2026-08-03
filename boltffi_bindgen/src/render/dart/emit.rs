@@ -2,15 +2,15 @@ use askama::Template as _;
 
 use crate::{
     ir::{
-        BuiltinId, EnumLayout, PrimitiveType, ReadOp, ReadSeq, ReturnDef, SizeExpr, TypeExpr,
-        ValueExpr, VecLayout, WriteOp, WriteSeq,
+        BuiltinId, EnumLayout, PrimitiveType, ReadOp, ReadSeq, RecordId, ReturnDef, SizeExpr,
+        TypeExpr, ValueExpr, VecLayout, WireSizeOwner, WriteOp, WriteSeq,
     },
     render::dart::{
-        DartLibrary, NamingConvention,
+        DartLibrary, DartType, NamingConvention,
         templates::{
-            BuildHookTemplate, CallbackTemplate, ClassTemplate, CustomTypesTemplate,
-            EnhancedEnumTemplate, NativeFunctionsTemplate, PreludeTemplate, PubspecTemplate,
-            RecordTemplate, SealedClassEnumTemplate,
+            BuildHookTemplate, CallableTemplate, CallbackTemplate, ClassTemplate,
+            CustomTypesTemplate, EnhancedEnumTemplate, ExternFunctionTemplate, PreludeTemplate,
+            PubspecTemplate, RecordTemplate, SealedClassEnumTemplate,
         },
     },
 };
@@ -25,57 +25,48 @@ pub struct DartEmitter {}
 
 impl DartEmitter {
     pub fn emit(library: &DartLibrary, artifact_name: &str) -> DartPackage {
-        let mut output = String::new();
-
-        output.push_str(PreludeTemplate {}.render().unwrap().as_str());
-
-        output.push_str("\n\n");
-        output.push_str(
-            CustomTypesTemplate {
-                custom_types: &library.custom_types,
-            }
-            .render()
-            .unwrap()
-            .as_str(),
-        );
-
-        for r in &library.records {
-            output.push_str("\n\n");
-            output.push_str(RecordTemplate { record: r }.render().unwrap().as_str());
-        }
-
-        for e in &library.enums {
-            let source = match &e.kind {
+        let output = std::iter::once(PreludeTemplate {}.render().unwrap())
+            .chain(std::iter::once(
+                CustomTypesTemplate {
+                    custom_types: &library.custom_types,
+                }
+                .render()
+                .unwrap(),
+            ))
+            .chain(
+                library
+                    .records
+                    .iter()
+                    .map(|r| RecordTemplate { record: r }.render().unwrap()),
+            )
+            .chain(library.enums.iter().map(|e| match &e.kind {
                 super::DartEnumKind::Enhanced => {
                     EnhancedEnumTemplate { dart_enum: e }.render().unwrap()
                 }
                 super::DartEnumKind::SealedClass => {
                     SealedClassEnumTemplate { dart_enum: e }.render().unwrap()
                 }
-            };
-            output.push_str("\n\n");
-            output.push_str(source.as_str());
-        }
-
-        for cb in &library.callbacks {
-            output.push_str("\n\n");
-            output.push_str(CallbackTemplate { cb }.render().unwrap().as_str());
-        }
-
-        for class in &library.classes {
-            output.push_str("\n\n");
-            output.push_str(ClassTemplate { class }.render().unwrap().as_str());
-        }
-
-        output.push_str("\n\n");
-        output.push_str(
-            NativeFunctionsTemplate {
-                cfuncs: &library.native.functions,
-            }
-            .render()
-            .unwrap()
-            .as_str(),
-        );
+            }))
+            .chain(
+                library
+                    .callbacks
+                    .iter()
+                    .map(|cb| CallbackTemplate { cb }.render().unwrap()),
+            )
+            .chain(
+                library
+                    .classes
+                    .iter()
+                    .map(|class| ClassTemplate { class }.render().unwrap()),
+            )
+            .chain(library.functions.iter().flat_map(|func| {
+                [
+                    ExternFunctionTemplate { func }.render().unwrap(),
+                    CallableTemplate { func }.render().unwrap(),
+                ]
+            }))
+            .reduce(|acc, s| acc + "\n" + s.as_str())
+            .unwrap_or_default();
 
         DartPackage {
             pubspec: PubspecTemplate {
@@ -135,14 +126,13 @@ pub fn render_value(expr: &ValueExpr) -> String {
     match expr {
         ValueExpr::Instance => String::new(),
         ValueExpr::Var(name) => name.clone(),
-        ValueExpr::Named(name) => NamingConvention::property_name(name),
+        ValueExpr::Named(name) => name.to_string(),
         ValueExpr::Field(parent, field) => {
             let parent_str = render_value(parent);
-            let field_str = NamingConvention::property_name(field.as_str());
             if parent_str.is_empty() {
-                field_str
+                field.to_string()
             } else {
-                format!("{}.{}", parent_str, field_str)
+                format!("{}.{}", parent_str, field.as_str())
             }
         }
     }
@@ -166,16 +156,21 @@ pub fn type_expr_dart_type(ty: &TypeExpr) -> String {
                 PrimitiveType::F64 => "$$typed_data.Float64List".to_string(),
                 PrimitiveType::U8 => "$$typed_data.Uint8List".to_string(),
                 PrimitiveType::I8 => "$$typed_data.Int8List".to_string(),
-                PrimitiveType::Bool => "$$typed_data.Uint8List".to_string(),
+                PrimitiveType::Bool => "$$BoltFFIBoolList".to_string(),
             },
             _ => format!("List<{}>", type_expr_dart_type(inner)),
         },
         TypeExpr::Option(inner) => format!("{}?", type_expr_dart_type(inner)),
-        TypeExpr::Result { ok, err } => format!(
-            "BoltFFIResult<{}, {}>",
-            type_expr_dart_type(ok),
-            type_expr_dart_type(err)
-        ),
+        TypeExpr::Result { ok, err } => {
+            format!(
+                "$$BoltResult<{}, {}>",
+                type_expr_dart_type(ok),
+                match err.as_ref() {
+                    TypeExpr::String => "$$BoltException".to_string(),
+                    _ => type_expr_dart_type(err),
+                },
+            )
+        }
         TypeExpr::Record(id) => render_type_name(id.as_str()),
         TypeExpr::Enum(id) => render_type_name(id.as_str()),
         TypeExpr::Custom(id) => render_type_name(id.as_str()),
@@ -197,7 +192,7 @@ pub fn return_def_dart_type(return_def: &ReturnDef) -> String {
         ReturnDef::Void => "void".to_string(),
         ReturnDef::Value(type_expr) => type_expr_dart_type(type_expr),
         ReturnDef::Result { ok, err } => format!(
-            "BoltFFIResult<{}, {}>",
+            "$$BoltResult<{}, {}>",
             type_expr_dart_type(ok),
             type_expr_dart_type(err)
         ),
@@ -345,7 +340,7 @@ fn emit_write_builtin(id: &BuiltinId, writer_name: &str, value: &str) -> String 
     match id.as_str() {
         "Duration" => format!("{}.writeDuration({});", writer_name, value),
         "SystemTime" => format!("{}.writeInstant({});", writer_name, value),
-        "Uuid" => format!("{}.writeUuid({});", writer_name, value),
+        "Uuid" => format!("{}.writeUUID({});", writer_name, value),
         "Url" => format!("{}.writeUri({});", writer_name, value),
         _ => format!("{}.writeString({});", writer_name, value),
     }
@@ -366,7 +361,7 @@ fn write_seq_dart_type(seq: &WriteSeq) -> String {
         }
         Some(WriteOp::Option { some, .. }) => format!("{}?", write_seq_dart_type(some)),
         Some(WriteOp::Result { ok, err, .. }) => format!(
-            "BoltFFIResult<{}, {}>",
+            "$$BoltResult<{}, {}>",
             write_seq_dart_type(ok),
             write_seq_dart_type(err)
         ),
@@ -378,36 +373,36 @@ fn emit_writer_vec(
     value: &str,
     element_type: &TypeExpr,
     element: &WriteSeq,
-    layout: &VecLayout,
+    _layout: &VecLayout,
     writer_name: &str,
 ) -> String {
-    match layout {
-        VecLayout::Blittable { .. } => match element_type {
-            TypeExpr::Primitive(..) => format!("{writer_name}.writeTypedList({value});"),
-            _ => {
-                let inner_write_expr = emit_writer_write(element, writer_name, "item");
-                format!(
-                    "{writer_name}.writeList({value}, (item, {writer_name}) {{ {} }});",
-                    inner_write_expr
-                )
-            }
-        },
-        VecLayout::Encoded => match element_type {
-            TypeExpr::Primitive(primitive) => {
-                let inner_write_expr = emit_write_primitive(*primitive, writer_name, "item");
-                format!(
-                    "{writer_name}.writeList({value}, (item, {writer_name}) {{ {} }});",
-                    inner_write_expr
-                )
-            }
-            _ => {
-                let inner_write_expr = emit_writer_write(element, writer_name, "item");
-                format!(
-                    "{writer_name}.writeList({value}, (item, {writer_name}) {{ {} }});",
-                    inner_write_expr
-                )
-            }
-        },
+    match element_type {
+        TypeExpr::Primitive(primitive) => {
+            let value = match primitive {
+                PrimitiveType::Bool => format!("{value}._bytes"),
+                PrimitiveType::I8
+                | PrimitiveType::U8
+                | PrimitiveType::I16
+                | PrimitiveType::U16
+                | PrimitiveType::I32
+                | PrimitiveType::U32
+                | PrimitiveType::I64
+                | PrimitiveType::U64
+                | PrimitiveType::ISize
+                | PrimitiveType::USize
+                | PrimitiveType::F32
+                | PrimitiveType::F64 => value.to_string(),
+            };
+
+            format!("{writer_name}.writeBytes({value});")
+        }
+        _ => {
+            let inner_write_expr = emit_writer_write(element, writer_name, "_p$item");
+            format!(
+                "{writer_name}.writeList({value}, (_p$item, {writer_name}) {{ {} }});",
+                inner_write_expr
+            )
+        }
     }
 }
 
@@ -434,24 +429,25 @@ pub fn emit_writer_write(seq: &WriteSeq, writer_name: &str, value: &str) -> Stri
             ..
         }) => emit_writer_vec(value, element_type, element, layout, writer_name),
         Some(WriteOp::Option { some, .. }) => {
-            let inner_write_expr = emit_writer_write(some, writer_name, "value");
+            let inner_write_expr = emit_writer_write(some, writer_name, value);
 
             format!(
-                "{writer_name}.writeOptional({value}, (value, {writer_name}) {{ {inner_write_expr} }});"
+                r#"if ({value} case final {value}?) {{ {writer_name}.writeU8(1); {inner_write_expr} }} else {{ {writer_name}.writeU8(0); }}"#
             )
         }
-        Some(WriteOp::Result { ok, err, .. }) => format!(
-            r#"
-{writer_name}.writeResult(
-  {value},
-  (value, {writer_name}) {{ {} }},
-  (value, {writer_name}) {{ {} }}
-);
-            "#,
-            emit_writer_write(ok, writer_name, "value"),
-            emit_writer_write(err, writer_name, "value"),
-        ),
-        _ => ";".to_string(),
+        Some(WriteOp::Result { ok, err, .. }) => {
+            let err_op = err.ops.first().expect("write ops");
+
+            format!(
+                r#"switch ({value}) {{ case $$BoltResult$Ok(:final value): {{ {writer_name}.writeU8(0); {} }} case $$BoltResult$Err(:final value): {{ {writer_name}.writeU8(1); {} }} }}"#,
+                emit_writer_write(ok, writer_name, "value"),
+                match err_op {
+                    WriteOp::String { .. } => format!("value._m$wireEncode({writer_name});"),
+                    _ => emit_writer_write(err, writer_name, "value"),
+                }
+            )
+        }
+        _ => String::new(),
     }
 }
 
@@ -474,39 +470,35 @@ pub fn primitive_read_method(primitive: PrimitiveType) -> &'static str {
 fn emit_reader_vec(
     element_type: &TypeExpr,
     element: &ReadSeq,
-    layout: &VecLayout,
+    _layout: &VecLayout,
     reader_name: &str,
+    is_void: bool,
 ) -> String {
-    match layout {
-        VecLayout::Blittable { .. } => match element_type {
-            TypeExpr::Primitive(primitive) => {
-                let method = match primitive {
-                    PrimitiveType::U8 | PrimitiveType::Bool => "readUint8List",
-                    PrimitiveType::I8 => "readInt8List",
-                    PrimitiveType::I16 => "readInt16List",
-                    PrimitiveType::U16 => "readUint16List",
-                    PrimitiveType::I32 => "readInt32List",
-                    PrimitiveType::U32 => "readUint32List",
-                    PrimitiveType::U64 | PrimitiveType::USize => "readUint64List",
-                    PrimitiveType::I64 | PrimitiveType::ISize => "readInt64List",
-                    PrimitiveType::F32 => "readFloat32List",
-                    PrimitiveType::F64 => "readFloat64List",
-                };
-                format!("{reader_name}.{}()", method)
-            }
-            _ => {
-                let inner_read_expr = emit_reader_read(element, reader_name);
-                format!("{reader_name}.readList(({reader_name}) => {inner_read_expr})")
-            }
-        },
-        VecLayout::Encoded => {
-            let inner_read_expr = emit_reader_read(element, reader_name);
+    match element_type {
+        TypeExpr::Primitive(primitive) => {
+            let method = match primitive {
+                PrimitiveType::Bool => "readBoolList",
+                PrimitiveType::U8 => "readUint8List",
+                PrimitiveType::I8 => "readInt8List",
+                PrimitiveType::I16 => "readInt16List",
+                PrimitiveType::U16 => "readUint16List",
+                PrimitiveType::I32 => "readInt32List",
+                PrimitiveType::U32 => "readUint32List",
+                PrimitiveType::U64 | PrimitiveType::USize => "readUint64List",
+                PrimitiveType::I64 | PrimitiveType::ISize => "readInt64List",
+                PrimitiveType::F32 => "readFloat32List",
+                PrimitiveType::F64 => "readFloat64List",
+            };
+            format!("{reader_name}.{}()", method)
+        }
+        _ => {
+            let inner_read_expr = emit_reader_read(element, reader_name, is_void);
             format!("{reader_name}.readList(({reader_name}) => {inner_read_expr})")
         }
     }
 }
 
-pub fn emit_reader_read(seq: &ReadSeq, reader_name: &str) -> String {
+pub fn emit_reader_read(seq: &ReadSeq, reader_name: &str, is_inner_void: bool) -> String {
     let op = seq.ops.first().expect("read ops");
     match op {
         ReadOp::Primitive { primitive, .. } => {
@@ -521,14 +513,11 @@ pub fn emit_reader_read(seq: &ReadSeq, reader_name: &str) -> String {
         }
         ReadOp::Enum { id, layout, .. } => match layout {
             EnumLayout::CStyle {
-                tag_type,
-                is_error: false,
-                ..
+                is_error: false, ..
             } => {
                 format!(
-                    "{}._m$fromValue({reader_name}.{}())",
+                    "{}._m$wireDecode({reader_name})",
                     render_type_name(id.as_str()),
-                    primitive_read_method(*tag_type),
                 )
             }
             EnumLayout::CStyle { is_error: true, .. }
@@ -541,39 +530,47 @@ pub fn emit_reader_read(seq: &ReadSeq, reader_name: &str) -> String {
             }
         },
         ReadOp::Option { some, .. } => {
-            let inner_read_expr = emit_reader_read(some, reader_name);
-            format!("{reader_name}.readOptional(({reader_name}) => {inner_read_expr})")
+            let inner_read_expr = emit_reader_read(some, reader_name, is_inner_void);
+            format!(
+                r#"switch ({reader_name}.readU8()) {{ 0 => null, 1 => {inner_read_expr}, (int _l$tag) => throw $$BoltException("Invalid Optional tag: ${{_l$tag}}") }}"#
+            )
         }
         ReadOp::Vec {
             element_type,
             element,
             layout,
             ..
-        } => emit_reader_vec(element_type, element, layout, reader_name),
+        } => emit_reader_vec(element_type, element, layout, reader_name, is_inner_void),
         ReadOp::Result { ok, err, .. } => {
-            let ok_expr = emit_reader_read(ok, reader_name);
-            let err_expr = emit_reader_read(err, reader_name);
+            let ok_expr = if is_inner_void {
+                "null".to_string()
+            } else {
+                emit_reader_read(ok, reader_name, is_inner_void)
+            };
+            let err_op = err.ops.first().expect("read ops");
+
+            let err_expr = match err_op {
+                ReadOp::String { .. } => format!("$$BoltException._m$wireDecode({reader_name})"),
+                _ => emit_reader_read(err, reader_name, is_inner_void),
+            };
             format!(
-                r#"
-{reader_name}.readResult(
-  ({reader_name}) => {ok_expr},
-  ({reader_name}) => {err_expr}
-)
-            "#
+                r#"(switch ({reader_name}.readU8()) {{ 0 => $$BoltResult.ok({ok_expr}), 1 => $$BoltResult.err({err_expr}), (int _l$tag) => throw $$BoltException("Invalid Result tag: ${{_l$tag}}") }})"#
             )
         }
         ReadOp::Builtin { id, .. } => match id.as_str() {
-            "Duration" => "reader.readDuration()".to_string(),
-            "SystemTime" => "reader.readInstant()".to_string(),
-            "Uuid" => "reader.readUuid()".to_string(),
-            "Url" => "reader.readUri()".to_string(),
-            _ => "reader.readString()".to_string(),
+            "Duration" => format!("{reader_name}.readDuration()"),
+            "SystemTime" => format!("{reader_name}.readInstant()"),
+            "Uuid" => format!("{reader_name}.readUUID()"),
+            "Url" => format!("{reader_name}.readUri()"),
+            _ => format!("{reader_name}.readString()"),
         },
-        ReadOp::Custom { underlying, .. } => emit_reader_read(underlying, reader_name),
+        ReadOp::Custom { underlying, .. } => {
+            emit_reader_read(underlying, reader_name, is_inner_void)
+        }
     }
 }
 
-fn remap_size_expr_value_expr(expr: &SizeExpr, v: ValueExpr) -> SizeExpr {
+pub(crate) fn remap_size_expr_value_expr(expr: &SizeExpr, v: ValueExpr) -> SizeExpr {
     match expr {
         SizeExpr::Fixed(value) => SizeExpr::Fixed(*value),
         SizeExpr::Runtime => SizeExpr::Runtime,
@@ -611,16 +608,40 @@ fn remap_size_expr_value_expr(expr: &SizeExpr, v: ValueExpr) -> SizeExpr {
     }
 }
 
+pub fn remap_write_seq(mut seq: WriteSeq) -> WriteSeq {
+    match seq.ops.first_mut() {
+        Some(WriteOp::Result { err: res_err, .. }) => {
+            let SizeExpr::ResultSize {
+                err: seq_res_err_size,
+                ..
+            } = &mut seq.size
+            else {
+                unreachable!()
+            };
+            let res_err_op = res_err.ops.first().expect("write op");
+            if let WriteOp::String { value } = res_err_op {
+                **seq_res_err_size = SizeExpr::WireSize {
+                    value: value.clone(),
+                    owner: Some(WireSizeOwner::Record(RecordId::new("_$$BoltException"))),
+                };
+                res_err.size = seq_res_err_size.as_ref().clone();
+            }
+            seq
+        }
+        _ => seq,
+    }
+}
+
 fn emit_vec_size(value: &str, inner: &SizeExpr, layout: &VecLayout) -> String {
     match layout {
-        VecLayout::Blittable { .. } => {
-            format!("(4 + {}.length * {})", value, emit_size_expr(inner))
+        VecLayout::Blittable { element_size } => {
+            format!("(4 + ({}.length * {}))", value, element_size)
         }
         VecLayout::Encoded => format!(
-            "{value}.fold<int>(0, (sum, item) => sum + {})",
+            "{value}.fold<int>(4, (_p$sum, _p$item) => _p$sum + {})",
             emit_size_expr(&remap_size_expr_value_expr(
                 inner,
-                ValueExpr::Named("item".to_string())
+                ValueExpr::Named("_p$item".to_string())
             ))
         ),
     }
@@ -677,11 +698,49 @@ pub fn emit_size_expr(size: &SizeExpr) -> String {
                 ValueExpr::Var("value".to_string()),
             ));
             format!(
-                "1 + (switch ({}) {{ BoltFFIResult$Ok(:final value) => {}, BoltFFIResult$Err(:final value) => {} }})",
+                "1 + (switch ({}) {{ $$BoltResult$Ok(:final value) => {}, $$BoltResult$Err(:final value) => {} }})",
                 render_value(value),
                 ok_expr,
                 err_expr
             )
         }
+    }
+}
+
+pub fn emit_cmp_expr(expr_a: &str, expr_b: &str, expr_ty: &DartType) -> String {
+    match expr_ty {
+        DartType::Void
+        | DartType::Bool
+        | DartType::Int(..)
+        | DartType::Double(..)
+        | DartType::String
+        | DartType::Closure(..)
+        | DartType::Record(..)
+        | DartType::Enum(..)
+        | DartType::Callback(..)
+        | DartType::Builtin(..)
+        | DartType::Custom(..) => format!("{expr_a} == {expr_b}"),
+        DartType::Option(ty) => format!(
+            "_$$BoltUtil.nullableCompare({expr_a}, {expr_b}, (_l$a, _l$b) => {})",
+            emit_cmp_expr("_l$a", "_l$b", ty)
+        ),
+        DartType::List(ty) => format!(
+            "_$$BoltUtil.listCompare({}, {}, (_l$a, _l$b) => {})",
+            expr_a,
+            expr_b,
+            emit_cmp_expr("_l$a", "_l$b", ty)
+        ),
+        DartType::Bytes => format!(
+            "_$$BoltUtil.listCompare({}, {}, (_l$a, _l$b) => _l$a == _l$b)",
+            expr_a, expr_b
+        ),
+        DartType::Result { ok, err } => format!(
+            "_$$BoltUtil.fallibleCompare({}, {}, (_l$okA, _l$okB) => {}, (_l$errA, _l$errB) => {})",
+            expr_a,
+            expr_b,
+            emit_cmp_expr("_l$okA", "_l$okB", ok),
+            emit_cmp_expr("_l$errA", "_l$errB", err)
+        ),
+        DartType::Class(_) => todo!(),
     }
 }

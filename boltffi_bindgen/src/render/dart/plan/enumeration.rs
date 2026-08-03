@@ -1,5 +1,5 @@
 use crate::{
-    ir::{PrimitiveType, ReadSeq, SizeExpr, WriteSeq},
+    ir::{PrimitiveType, ReadSeq, SizeExpr, ValueExpr, WriteSeq},
     render::dart::emit,
 };
 
@@ -12,14 +12,14 @@ pub enum DartEnumKind {
 #[derive(Debug, Clone)]
 pub struct DartEnumField {
     pub name: String,
-    pub dart_type: super::DartType,
+    pub ty: super::DartType,
     pub read_seq: ReadSeq,
     pub write_seq: WriteSeq,
 }
 
 impl DartEnumField {
     pub fn wire_decode_expr(&self, reader_name: &str) -> String {
-        emit::emit_reader_read(&self.read_seq, reader_name)
+        emit::emit_reader_read(&self.read_seq, reader_name, self.ty.is_inner_void())
     }
 
     pub fn wire_encode_expr(&self, writer_name: &str) -> String {
@@ -27,7 +27,14 @@ impl DartEnumField {
     }
 
     pub fn wire_encoded_size_expr(&self) -> String {
-        emit::emit_size_expr(&self.write_seq.size)
+        emit::emit_size_expr(&emit::remap_size_expr_value_expr(
+            &self.write_seq.size,
+            ValueExpr::Named(self.name.to_string()),
+        ))
+    }
+
+    pub fn field_cmp_expr(&self, other: &str) -> String {
+        emit::emit_cmp_expr(&self.name, &format!("{other}.{}", self.name), &self.ty)
     }
 }
 
@@ -35,7 +42,7 @@ impl DartEnumField {
 pub struct DartEnumVariant {
     pub name: String,
     pub class_name: String,
-    pub tag: i128,
+    pub discriminant: i128,
     pub fields: Vec<DartEnumField>,
 }
 
@@ -47,8 +54,9 @@ pub struct DartEnum {
     pub variants: Vec<DartEnumVariant>,
     pub size_expr: SizeExpr,
     pub is_error: bool,
-    pub constructors: Vec<super::DartConstructor>,
+    pub constructors: Vec<super::DartFunction>,
     pub methods: Vec<super::DartFunction>,
+    pub doc: Option<String>,
 }
 
 impl DartEnum {
@@ -56,14 +64,6 @@ impl DartEnum {
         format!(
             "{reader_name}.{}()",
             emit::primitive_read_method(self.tag_type)
-        )
-    }
-
-    pub fn tag_writer_write(&self, variant: &DartEnumVariant, writer_name: &str) -> String {
-        format!(
-            "{writer_name}.{}({});",
-            emit::primitive_write_method(self.tag_type),
-            variant.tag
         )
     }
 

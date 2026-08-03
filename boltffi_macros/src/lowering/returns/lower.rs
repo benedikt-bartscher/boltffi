@@ -52,7 +52,7 @@ impl ResolvedReturn {
                 ) => quote! {
                     #[cfg(target_arch = "wasm32")]
                     {
-                        return ::boltffi::__private::FfiBuf::default().into_packed();
+                        return ::boltffi::__private::FfiBuf::EMPTY_PACKED;
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     {
@@ -91,7 +91,7 @@ impl ResolvedReturn {
                 ReturnPlatform::Wasm,
             ) {
                 Some(DirectBufferReturnMethod::Packed) => quote! {
-                    return ::boltffi::__private::FfiBuf::default().into_packed();
+                    return ::boltffi::__private::FfiBuf::EMPTY_PACKED;
                 },
                 method => panic!(
                     "unexpected wasm direct buffer return method for invalid-arg return: {:?}",

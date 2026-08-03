@@ -82,16 +82,103 @@ pub use wasm::{
     write_return_slot,
 };
 
+/// Describes an error thrown by a foreign callback that was not its declared Rust error type.
+///
+/// Callback error owners implement `From<UnexpectedFfiCallbackError>` to choose the typed Rust
+/// error returned to their caller when a host-language implementation violates that declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnexpectedFfiCallbackError(pub String);
 
+/// The result of inspecting a foreign callback's error payload.
+///
+/// This protocol detail is public only so generated code in downstream crates can distinguish
+/// declared errors from unexpected host-language errors. Applications should implement
+/// `From<UnexpectedFfiCallbackError>` for callback error types instead of using this enum.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnexpectedFfiCallbackPayload {
+    /// The payload does not use the unexpected-error envelope and must be decoded as the callback's
+    /// declared error type.
+    NotUnexpected,
+    /// The payload is a valid unexpected-error envelope.
+    Unexpected(UnexpectedFfiCallbackError),
+    /// The payload starts with the reserved marker but has an unsupported or malformed envelope.
+    ///
+    /// Generated code treats this as unexpected rather than attempting to decode the bytes as the
+    /// declared error type.
+    Malformed(UnexpectedFfiCallbackError),
+}
+
 impl UnexpectedFfiCallbackError {
+    /// Marks an encoded unexpected foreign-callback error.
+    ///
+    /// This long marker keeps the envelope distinct from ordinary encoded callback errors while
+    /// leaving their existing wire representation unchanged.
+    #[doc(hidden)]
+    pub const WIRE_MARKER: [u8; 16] = *b"BOLTFFI_CALLBACK";
+
+    /// Identifies the unexpected callback error envelope format understood by this runtime.
+    #[doc(hidden)]
+    pub const WIRE_VERSION: u8 = 1;
+
+    const WIRE_HEADER_LEN: usize = Self::WIRE_MARKER.len() + 1 + core::mem::size_of::<u32>();
+
+    /// Creates an unexpected callback error with the host-language error message.
     pub fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
 
+    /// Returns the host-language error message.
     pub fn message(&self) -> &str {
         &self.0
+    }
+
+    /// Classifies a foreign callback error payload without decoding declared errors heuristically.
+    ///
+    /// The envelope is the marker, one version byte, a little-endian `u32` UTF-8 byte length, and
+    /// exactly that many message bytes. Once the full marker is present, unsupported versions,
+    /// truncation, trailing bytes, and invalid UTF-8 are classified as malformed unexpected errors
+    /// so generated code never falls through to the declared-error decoder.
+    #[doc(hidden)]
+    pub fn classify_payload(payload: &[u8]) -> UnexpectedFfiCallbackPayload {
+        if !payload.starts_with(&Self::WIRE_MARKER) {
+            return UnexpectedFfiCallbackPayload::NotUnexpected;
+        }
+
+        if payload.len() < Self::WIRE_HEADER_LEN {
+            return Self::malformed_payload("truncated header");
+        }
+
+        let version = payload[Self::WIRE_MARKER.len()];
+        if version != Self::WIRE_VERSION {
+            return Self::malformed_payload(format!("unsupported version {version}"));
+        }
+
+        let length_start = Self::WIRE_MARKER.len() + 1;
+        let length_end = length_start + core::mem::size_of::<u32>();
+        let Ok(length_bytes) = payload[length_start..length_end].try_into() else {
+            return Self::malformed_payload("invalid message length");
+        };
+        let message_len = u32::from_le_bytes(length_bytes) as usize;
+        let Some(expected_len) = Self::WIRE_HEADER_LEN.checked_add(message_len) else {
+            return Self::malformed_payload("message length overflow");
+        };
+        if payload.len() != expected_len {
+            return Self::malformed_payload("message length mismatch");
+        }
+
+        let message = match core::str::from_utf8(&payload[Self::WIRE_HEADER_LEN..]) {
+            Ok(message) => message,
+            Err(_) => return Self::malformed_payload("message is not valid UTF-8"),
+        };
+        UnexpectedFfiCallbackPayload::Unexpected(Self::new(message))
+    }
+
+    /// Builds a fail-closed classification for a recognized but invalid envelope.
+    fn malformed_payload(reason: impl std::fmt::Display) -> UnexpectedFfiCallbackPayload {
+        UnexpectedFfiCallbackPayload::Malformed(Self::new(format!(
+            "malformed unexpected callback error payload: {reason}"
+        )))
     }
 }
 
@@ -106,6 +193,87 @@ impl std::error::Error for UnexpectedFfiCallbackError {}
 impl From<UnexpectedFfiCallbackError> for String {
     fn from(error: UnexpectedFfiCallbackError) -> Self {
         error.0
+    }
+}
+
+#[cfg(test)]
+mod unexpected_ffi_callback_error_tests {
+    use super::{UnexpectedFfiCallbackError, UnexpectedFfiCallbackPayload};
+
+    fn payload(version: u8, message: &[u8]) -> Vec<u8> {
+        let mut payload = UnexpectedFfiCallbackError::WIRE_MARKER.to_vec();
+        payload.push(version);
+        payload.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        payload.extend_from_slice(message);
+        payload
+    }
+
+    #[test]
+    fn classifies_valid_unexpected_callback_error_payload() {
+        assert_eq!(
+            UnexpectedFfiCallbackError::classify_payload(&payload(
+                UnexpectedFfiCallbackError::WIRE_VERSION,
+                b"ConnectError"
+            )),
+            UnexpectedFfiCallbackPayload::Unexpected(UnexpectedFfiCallbackError::new(
+                "ConnectError"
+            ))
+        );
+    }
+
+    #[test]
+    fn leaves_declared_error_payloads_unclassified() {
+        let mut near_marker = UnexpectedFfiCallbackError::WIRE_MARKER;
+        near_marker[0] ^= 0xff;
+
+        assert_eq!(
+            UnexpectedFfiCallbackError::classify_payload(&near_marker),
+            UnexpectedFfiCallbackPayload::NotUnexpected
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_unexpected_callback_error_header() {
+        assert!(matches!(
+            UnexpectedFfiCallbackError::classify_payload(&UnexpectedFfiCallbackError::WIRE_MARKER),
+            UnexpectedFfiCallbackPayload::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_unexpected_callback_error_version() {
+        assert!(matches!(
+            UnexpectedFfiCallbackError::classify_payload(&payload(2, b"ConnectError")),
+            UnexpectedFfiCallbackPayload::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_unexpected_callback_error_length_mismatch() {
+        let mut too_short = payload(UnexpectedFfiCallbackError::WIRE_VERSION, b"ConnectError");
+        too_short.pop();
+        let mut trailing = payload(UnexpectedFfiCallbackError::WIRE_VERSION, b"ConnectError");
+        trailing.push(0);
+
+        assert!(matches!(
+            UnexpectedFfiCallbackError::classify_payload(&too_short),
+            UnexpectedFfiCallbackPayload::Malformed(_)
+        ));
+        assert!(matches!(
+            UnexpectedFfiCallbackError::classify_payload(&trailing),
+            UnexpectedFfiCallbackPayload::Malformed(_)
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_unexpected_callback_error_message() {
+        assert!(matches!(
+            UnexpectedFfiCallbackError::classify_payload(&payload(
+                UnexpectedFfiCallbackError::WIRE_VERSION,
+                &[0xff]
+            )),
+            UnexpectedFfiCallbackPayload::Malformed(_)
+        ));
     }
 }
 

@@ -1,3 +1,6 @@
 {%- for custom in custom_types %}
+{%- if let Some(doc) = custom.doc %}
+{{ super::to_dart_doc(doc) }}
+{%- endif %}
 typedef {{ custom.name }} = {{ custom.ty.dart_type() }};
-{%- endfor %}
+{% endfor -%}

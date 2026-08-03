@@ -2204,8 +2204,11 @@ where
     }
 
     fn native_async_foreign_body(&self, call: TokenStream) -> Result<TokenStream, Error> {
-        if let ErrorDecl::EncodedViaReturnSlot { codec, shape, .. } = self.error {
-            return self.native_async_fallible_body(call, codec.root(), *shape);
+        if let ErrorDecl::EncodedViaReturnSlot {
+            ty, codec, shape, ..
+        } = self.error
+        {
+            return self.native_async_fallible_body(call, codec.root(), *shape, ty);
         }
 
         match InfallibleMethodReturn::new(self.plan, self.error)? {
@@ -2544,15 +2547,15 @@ where
         call: TokenStream,
         error_codec: &CodecNode,
         error_shape: S::BufferShape,
+        error_ty: &TypeRef,
     ) -> Result<TokenStream, Error> {
-        S::callback_encoded_error(error_shape)?;
-        let success = self.async_fallible_success_value(quote! {
-            unsafe { __boltffi_result.as_byte_slice() }
-        })?;
-        let error = self.async_fallible_error_value(
-            error_codec,
-            quote! { unsafe { __boltffi_result.as_byte_slice() } },
-        )?;
+        let error_slot = S::callback_encoded_error(error_shape)?;
+        let fallible = self.source.fallible()?;
+        let error_type = fallible.error_written_type()?;
+        let bytes = quote! { unsafe { __boltffi_result.as_byte_slice() } };
+        let success = self.async_fallible_success_value(bytes.clone())?;
+        let declared_error = self.async_fallible_error_value(error_codec, bytes.clone())?;
+        let error = error_slot.foreign_error_value(error_ty, &error_type, bytes, declared_error);
         Ok(self.native_async_bytes_result_body(call, success, error))
     }
 
@@ -2811,8 +2814,11 @@ where
     }
 
     fn foreign_body(&self, call: TokenStream) -> Result<TokenStream, Error> {
-        if let ErrorDecl::EncodedViaReturnSlot { codec, shape, .. } = self.error {
-            return self.foreign_fallible_body(call, codec.root(), *shape);
+        if let ErrorDecl::EncodedViaReturnSlot {
+            ty, codec, shape, ..
+        } = self.error
+        {
+            return self.foreign_fallible_body(call, codec.root(), *shape, ty);
         }
         match InfallibleMethodReturn::new(self.plan, self.error)? {
             InfallibleMethodReturn::Void => Ok(quote! {
@@ -2992,17 +2998,24 @@ where
         call: TokenStream,
         error_codec: &CodecNode,
         error_shape: S::BufferShape,
+        error_ty: &TypeRef,
     ) -> Result<TokenStream, Error> {
         let error_slot = S::callback_encoded_error(error_shape)?;
         let fallible = self.source.fallible()?;
         let error_type = fallible.error_written_type()?;
-        let error_value = error_slot.decode(
+        let declared_error = error_slot.decode(
             quote! { __boltffi_error },
             error_codec,
-            error_type,
+            error_type.clone(),
             fallible.error(),
             self.expansion,
         )?;
+        let error_value = error_slot.foreign_error_value(
+            error_ty,
+            &error_type,
+            quote! { unsafe { __boltffi_error.as_byte_slice() } },
+            declared_error,
+        );
         let success = self.foreign_success_value()?;
         let success_storage = self.foreign_success_storage()?;
         let error_empty = error_slot.is_empty(quote! { __boltffi_error });
@@ -4365,6 +4378,31 @@ enum CallbackEncodedError {
     WasmPacked,
 }
 
+/// Classifies reserved native payloads for typed errors before using their declared decoder.
+fn native_foreign_callback_error_value(
+    error_ty: &TypeRef,
+    error_type: &Type,
+    bytes: TokenStream,
+    declared_error: TokenStream,
+) -> TokenStream {
+    match error_ty {
+        TypeRef::Record(_) | TypeRef::Enum(_) => quote! {
+            match ::boltffi::__private::UnexpectedFfiCallbackError::classify_payload(#bytes) {
+                ::boltffi::__private::UnexpectedFfiCallbackPayload::NotUnexpected => {
+                    #declared_error
+                }
+                ::boltffi::__private::UnexpectedFfiCallbackPayload::Unexpected(error)
+                | ::boltffi::__private::UnexpectedFfiCallbackPayload::Malformed(error) => {
+                    <#error_type as ::core::convert::From<
+                        ::boltffi::__private::UnexpectedFfiCallbackError
+                    >>::from(error)
+                }
+            }
+        },
+        _ => declared_error,
+    }
+}
+
 impl CallbackEncodedError {
     fn return_type(&self) -> TokenStream {
         match self {
@@ -4376,7 +4414,7 @@ impl CallbackEncodedError {
     fn empty_value(&self) -> TokenStream {
         match self {
             Self::NativeBuffer => quote! { ::boltffi::__private::FfiBuf::default() },
-            Self::WasmPacked => quote! { ::boltffi::__private::FfiBuf::default().into_packed() },
+            Self::WasmPacked => quote! { ::boltffi::__private::FfiBuf::EMPTY_PACKED },
         }
     }
 
@@ -4391,6 +4429,24 @@ impl CallbackEncodedError {
         match self {
             Self::NativeBuffer => quote! { #value.is_empty() },
             Self::WasmPacked => quote! { #value == 0 },
+        }
+    }
+
+    /// Classifies unexpected errors only for native foreign callbacks.
+    ///
+    /// Local Rust callbacks are type-safe, and WASM hosts do not yet emit this envelope.
+    fn foreign_error_value(
+        &self,
+        error_ty: &TypeRef,
+        error_type: &Type,
+        bytes: TokenStream,
+        declared_error: TokenStream,
+    ) -> TokenStream {
+        match self {
+            Self::NativeBuffer => {
+                native_foreign_callback_error_value(error_ty, error_type, bytes, declared_error)
+            }
+            Self::WasmPacked => declared_error,
         }
     }
 

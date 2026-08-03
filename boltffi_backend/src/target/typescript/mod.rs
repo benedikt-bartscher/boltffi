@@ -1135,12 +1135,12 @@ mod tests {
             "const __boltffi_value_writer = _module.allocWriter(PointCodec.size(value));"
         ));
         assert!(browser.contents().contains(
-            "const __boltffiReader = _module.takePackedBuffer((_exports.boltffi_function_demo_echo_point"
+            "return _module.readPackedBuffer((_exports.boltffi_function_demo_echo_point"
         ));
         assert!(
             browser
                 .contents()
-                .contains("return PointCodec.decode(__boltffiReader);")
+                .contains("(__boltffiReader) => PointCodec.decode(__boltffiReader)")
         );
         assert!(
             browser

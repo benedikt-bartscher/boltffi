@@ -8,6 +8,7 @@ impl<'a> super::DartLowerer<'a> {
         DartCustomType {
             name: custom.id.to_string(),
             ty: DartType::from_type_expr(&custom.repr, &self.ffi.catalog),
+            doc: custom.doc.clone(),
         }
     }
 

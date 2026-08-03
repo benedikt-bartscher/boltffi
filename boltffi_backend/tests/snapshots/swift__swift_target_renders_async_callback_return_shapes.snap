@@ -112,8 +112,13 @@ private var boltffiListenerVtable: ___ListenerVTable = {
                     boltffiResultBytes.withUnsafeBufferPointer { boltffiResultBuffer in
                         completion?(completionContext, FfiStatus(code: 0), boltffi_buf_from_bytes(boltffiResultBuffer.baseAddress, UInt(boltffiResultBuffer.count)))
                     }
+                } catch let error as LoadError {
+                    let boltffiErrorBytes = boltffiEncode { boltffiErrorWriter in boltffiErrorWriter.writeI32(error.rawValue) }
+                    boltffiErrorBytes.withUnsafeBufferPointer { boltffiErrorBuffer in
+                        completion?(completionContext, FfiStatus(code: 1), boltffi_buf_from_bytes(boltffiErrorBuffer.baseAddress, UInt(boltffiErrorBuffer.count)))
+                    }
                 } catch {
-                    let boltffiErrorBytes = boltffiEncode { boltffiErrorWriter in boltffiErrorWriter.writeI32((error as? LoadError)!.rawValue) }
+                    let boltffiErrorBytes = boltffiEncodeUnexpectedCallbackError(error)
                     boltffiErrorBytes.withUnsafeBufferPointer { boltffiErrorBuffer in
                         completion?(completionContext, FfiStatus(code: 1), boltffi_buf_from_bytes(boltffiErrorBuffer.baseAddress, UInt(boltffiErrorBuffer.count)))
                     }
@@ -130,8 +135,13 @@ private var boltffiListenerVtable: ___ListenerVTable = {
                     boltffiResultBytes.withUnsafeBufferPointer { boltffiResultBuffer in
                         completion?(completionContext, FfiStatus(code: 0), boltffi_buf_from_bytes(boltffiResultBuffer.baseAddress, UInt(boltffiResultBuffer.count)))
                     }
+                } catch let error as LoadError {
+                    let boltffiErrorBytes = boltffiEncode { boltffiErrorWriter in boltffiErrorWriter.writeI32(error.rawValue) }
+                    boltffiErrorBytes.withUnsafeBufferPointer { boltffiErrorBuffer in
+                        completion?(completionContext, FfiStatus(code: 1), boltffi_buf_from_bytes(boltffiErrorBuffer.baseAddress, UInt(boltffiErrorBuffer.count)))
+                    }
                 } catch {
-                    let boltffiErrorBytes = boltffiEncode { boltffiErrorWriter in boltffiErrorWriter.writeI32((error as? LoadError)!.rawValue) }
+                    let boltffiErrorBytes = boltffiEncodeUnexpectedCallbackError(error)
                     boltffiErrorBytes.withUnsafeBufferPointer { boltffiErrorBuffer in
                         completion?(completionContext, FfiStatus(code: 1), boltffi_buf_from_bytes(boltffiErrorBuffer.baseAddress, UInt(boltffiErrorBuffer.count)))
                     }

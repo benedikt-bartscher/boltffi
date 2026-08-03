@@ -200,6 +200,9 @@ impl Input {
         borrow: rust_api::DecodeBorrow,
         expansion: &Expansion<'lowered, S>,
     ) -> Result<TokenStream, Error> {
+        if let Some(borrowed) = self.borrowed_bytes(codec, borrow, expansion)? {
+            return Ok(borrowed);
+        }
         let storage = names::Parameter::new(&self.binding).storage();
         let owned = self.owned(
             codec,
@@ -214,6 +217,65 @@ impl Input {
             #owned
             let #binding = #borrow;
         })
+    }
+
+    /// `&[u8]` borrows the encoded payload instead of decoding it into owned
+    /// storage first. The bytes are already contiguous behind their length
+    /// prefix, so the `Vec` the general path builds is allocated and copied
+    /// only to be borrowed from and dropped.
+    ///
+    /// The borrow lives only for the synchronous call, which is when the host
+    /// still owns the buffer. It assumes what the ABI already requires of every
+    /// pointer pair: that a caller passing several buffers passes disjoint
+    /// ones. Generated bindings allocate each parameter separately, so this
+    /// only binds hand-written callers of the raw exports.
+    ///
+    /// Narrow on purpose. `&mut [u8]` mutates and has its own direct path; a
+    /// custom codec produces a different value than the bytes on the wire;
+    /// wider element types would be misaligned at the payload offset and are
+    /// little-endian encoded rather than native. Returns `None` whenever this
+    /// does not apply, leaving the general path to handle it.
+    fn borrowed_bytes<'lowered, S: RenderSurface>(
+        &self,
+        codec: &CodecNode,
+        borrow: rust_api::DecodeBorrow,
+        expansion: &Expansion<'lowered, S>,
+    ) -> Result<Option<TokenStream>, Error> {
+        if !matches!(borrow, rust_api::DecodeBorrow::Slice { mutable: false })
+            || !matches!(codec, CodecNode::Bytes)
+        {
+            return Ok(None);
+        }
+        let converted =
+            super::custom::Incoming::new(codec, expansion).convert(quote! { __boltffi_decoded })?;
+        if converted.changed() {
+            return Ok(None);
+        }
+
+        let binding = &self.binding;
+        let pointer = &self.pointer;
+        let length = &self.length;
+        let failure = &self.failure;
+        Ok(Some(quote! {
+            let #binding: &[u8] = {
+                if #pointer.is_null() && #length > 0 {
+                    ::boltffi::__private::set_last_error_len(stringify!(#binding), "null pointer with non-zero length", #length as usize);
+                    #failure
+                }
+                let __boltffi_bytes: &[u8] = if #length == 0 {
+                    &[]
+                } else {
+                    unsafe { ::core::slice::from_raw_parts(#pointer, #length) }
+                };
+                match ::boltffi::__private::wire::decode_bytes(__boltffi_bytes) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        ::boltffi::__private::set_last_error_display(stringify!(#binding), "wire decode failed", &error, #length as usize);
+                        #failure
+                    }
+                }
+            };
+        }))
     }
 
     fn owned<'lowered, S: RenderSurface>(

@@ -1,25 +1,41 @@
-{% match record.blittable_layout %}
-{% when None%}
+{%- match record.blittable_layout %}
+{%- when None -%}
 {%- when Some with (layout) %}
 final class {{ layout.struct_name }} extends $$ffi.Struct {
 {%- for field in layout.fields %}
-  {{ field.native_type.field_annot() }}
-  external {{ field.native_type.dart_sub_type() }} {{ field.name }};
+  {{ field.native_type.struct_field_annotation() }}
+  external {{ field.native_type.sub_type() }} {{ field.name }};
 {% endfor -%}
 }
 {% endmatch %}
-final class {{ record.name }}{% if record.is_error %} implements Exception{% endif %} {
+{%- for func in record.constructors %}
+{%- include "extern_function.txt" %}
+{% endfor -%}
+{% for func in record.methods %}
+{%- include "extern_function.txt" %}
+{% endfor %}
+{%- if let Some(doc) = record.doc %}
+{{ super::to_dart_doc(doc) }}
+{%- endif%}
+final class {{ record.name }}{% if !record.interfaces.is_empty() %} implements {% for interface in record.interfaces %}{{ interface.name() }}{% if !loop.last %}, {% endif %}{%- endfor %}{% endif %} {
 {%- for field in record.fields %}
-  {{ field.dart_type }} {{ field.name }};
+{%- if let Some(doc) = field.doc %}
+  {{ super::to_dart_doc(doc) }}
+{%- endif%}
+  {{ field.ty.dart_type() }} {{ field.name }};
 {%- endfor %}
 
   {{ record.name }}({
-{%- for field in record.fields %}
+{%- for field in record.fields_with_defaults() %}
+    this.{{ field.name }}{% if let crate::ir::DefaultValue::Null = field.default_value.as_ref().unwrap() %}{% else %} = {{ field.dart_default_value() }}{% endif %},
+{%- endfor %}
+{%- for field in record.fields_without_defaults() %}
     required this.{{ field.name }},
 {%- endfor %}
   });
 
-  factory {{ record.name }}._m$wireDecode(_$$WireReader _p$reader) {
+  @pragma('vm:prefer-inline')
+  factory {{ record.name }}._m$wireDecode(_$$BoltWireDecoder _p$reader) {
     return {{ record.name }}(
 {%- for field in record.fields %}
       {{ field.name }}: {{ field.wire_decode_expr("_p$reader")|indent(6)|trim }},
@@ -27,33 +43,68 @@ final class {{ record.name }}{% if record.is_error %} implements Exception{% end
     );
   }
 
-  void _m$wireEncode(_$$WireWriter _p$writer) {
+  @pragma('vm:prefer-inline')
+  void _m$wireEncode(_$$BoltWireEncoder _p$writer) {
 {%- for field in record.fields %}
     {{ field.wire_encode_expr("_p$writer")|indent(4)|trim }}
 {%- endfor %}
   }
 
-  int _m$wireEncodedSize() =>
-{%- for field in record.fields %}
-    {{ field.wire_encoded_size_expr() }}{% if !loop.last %} +{% endif %}
-{%- endfor %};
-{% match record.blittable_layout %}
-{% when None %}
+  @pragma('vm:prefer-inline')
+  int _m$wireEncodedSize() => {% for field in record.fields %}{{ field.wire_encoded_size_expr() }}{% if !loop.last %} + {% endif %}{% endfor %};
+
+{%- match record.blittable_layout %}
+{%- when None -%}
 {%- when Some with (layout) %}
 {%- for field in layout.fields %}
-  // static const {{ field.offset_const_name }} = {{ field.offset }};
+  static const {{ field.offset_const_name }} = {{ field.offset }};
 {%- endfor %}
-  // static const _k$structSize = {{ layout.struct_size }};
-  static final _k$structSize = $$ffi.sizeOf<{{ layout.struct_name }}>();
+  static const _k$structSize = {{ layout.struct_size }};
 
-  void _m$blittableEncode(_$$WireWriter _p$writer) {
-    final ref = _p$writer.getCurrPtr<{{ layout.struct_name }}>().ref;
-    _p$writer._offset += _k$structSize;
+  @pragma('vm:prefer-inline')
+  void _m$blittableWrite(_$$BoltBufWriter _p$writer) {
+    final l$offset = _p$writer.advance(_k$structSize);
 {%- for field in layout.fields %}
-    ref.{{ field.name }} = {{ field.name }};
+    _p$writer.{{ field.primitive_write_method() }}({{ field.name }}, l$offset + {{ field.offset_const_name }});
 {%- endfor %}
   }
 
+  @pragma('vm:prefer-inline')
+  factory {{ record.name }}._m$blittableRead(_$$BoltBufReader _p$reader) {
+    final l$offset = _p$reader.advance(_k$structSize);
+    return {{ record.name }}(
+{%- for field in layout.fields %}
+      {{ field.name }}: _p$reader.{{ field.primitive_read_method() }}(l$offset + {{ field.offset_const_name }}){% if !loop.last %}, {% endif %}
+{%- endfor %}
+    );
+  }
+
+  @pragma('vm:prefer-inline')
+  static void _m$blittableWriteList(List<{{ record.name }}> _p$values, _$$BoltBufWriter _p$writer) {
+    final l$offset = _p$writer.advance(_p$values.length * _k$structSize);
+    for (int l$i = 0; l$i < _p$values.length; ++l$i) {
+      final l$item = _p$values[l$i];
+      final l$itemOffset = l$offset + (l$i * _k$structSize);
+{%- for field in layout.fields %}
+      _p$writer.{{ field.primitive_write_method() }}(l$item.{{ field.name }}, l$itemOffset + {{ field.offset_const_name }});
+{%- endfor %}
+    }
+  }
+
+  @pragma('vm:prefer-inline')
+  static List<{{ record.name }}> _m$blittableReadList(int _p$lengthInBytes, _$$BoltBufReader _p$reader) {
+    final l$offset = _p$reader.advance(_p$lengthInBytes);
+    return List.generate(_p$lengthInBytes ~/ _k$structSize, (l$i) {
+      final l$itemOffset = l$offset + (l$i * _k$structSize);
+      return {{ record.name }}(
+{%- for field in layout.fields %}
+        {{ field.name }}: _p$reader.{{ field.primitive_read_method() }}(l$itemOffset + {{ field.offset_const_name }}){% if !loop.last %}, {% endif %}
+{%- endfor %}
+      );
+    });
+  }
+
+  @pragma('vm:prefer-inline')
   factory {{ record.name }}._m$fromStruct({{ layout.struct_name }} _p$struct) {
     return {{ record.name }}(
 {%- for field in layout.fields %}
@@ -62,45 +113,38 @@ final class {{ record.name }}{% if record.is_error %} implements Exception{% end
     );
   }
 
-  factory {{ record.name }}._m$blittableDecodeFromPtrLen($$ffi.Pointer<$$ffi.Uint8> _p$ptr, int _p$len) {
-    if (_p$len != _k$structSize) {
-      throw _$$FFIException(-1, "BlittbleDecodeFromPtrLenError({{ record.name }}): expected pointer length (${_p$len}) to be equal to struct size (${_k$structSize})");
-    }
-
-    return {{ record.name }}._m$fromStruct(_p$ptr.cast<{{ layout.struct_name }}>().ref);
-  }
-
+  @pragma('vm:prefer-inline')
   {{ layout.struct_name }} _m$toStruct() {
-    final l$writer = _$$WireWriter(_k$structSize);
-    final ref = l$writer._ptr.cast<{{ layout.struct_name }}>().ref;
-    l$writer._offset += _k$structSize;
+    return $$ffi.Struct.create<{{ layout.struct_name }}>()
 {%- for field in layout.fields %}
-    ref.{{ field.name }} = {{ field.name }};
+      ..{{ field.name }} = {{ field.name }}{% if loop.last %};{% endif %}
 {%- endfor %}
-    return ref;
   }
-{% endmatch -%}
-{%- for ctor in record.constructors %}
-{%- match ctor.kind %}
-{% when super::DartConstructorKind::Default %}
-  factory {{ record.name }}(
-{%- for param in ctor.params %}
-    {{ param.ty.dart_type() }} {{ param.name }},
+{%- endmatch %}
+
+  @override
+  int get hashCode{% if !record.fields.is_empty()%} {
+    int _l$result = 1;
+{%- for field in record.fields %}
+    _l$result = 31 * _l$result + {{ field.ty.hash_expr(&field.name) }};
 {%- endfor %}
-  ) {}
-{% when super::DartConstructorKind::Named with { name: ctor_name } %}
-  factory {{ record.name }}.{{ ctor_name }}(
-{%- for param in ctor.params %}
-    {{ param.ty.dart_type() }} {{ param.name }},
-{%- endfor %}
-  ) {}
-{% endmatch -%}
-{% endfor -%}
-{%- for meth in record.methods %}
-  {% if meth.is_static() %}static {% endif %}{{ meth.ret_ty.dart_type() }} {{ meth.name }}(
-{%- for param in meth.params %}
-    {{ param.ty.dart_type() }} {{ param.name }},
-{%- endfor %}
-  ) {}
+    return _l$result;
+  }{% else %} => runtimeType.hashCode;{% endif %}
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+
+    return other is {{ record.name }}{% if !record.fields.is_empty() %} && {% for field in record.fields %}{{ field.field_cmp_expr("other") }}{% if !loop.last %} && {% endif %}{% endfor %}{% endif %};
+  }
+{% for func in record.constructors %}
+{%- filter indent(2, true) %}
+{%- include "callable.txt" %}
+{%- endfilter %}
+{% endfor %}
+{%- for func in record.methods %}
+{%- filter indent(2, true) %}
+{%- include "callable.txt" %}
+{%- endfilter %}
 {% endfor -%}
 }

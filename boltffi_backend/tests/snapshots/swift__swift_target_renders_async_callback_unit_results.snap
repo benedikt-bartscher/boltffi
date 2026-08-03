@@ -61,8 +61,13 @@ private var boltffiListenerVtable: ___ListenerVTable = {
                 do {
                     try await wrapper.impl.remove(key: key)
                     completion?(completionContext, FfiStatus(code: 0), FfiBuf_u8())
+                } catch let error as LoadError {
+                    let boltffiErrorBytes = boltffiEncode { boltffiErrorWriter in boltffiErrorWriter.writeI32(error.rawValue) }
+                    boltffiErrorBytes.withUnsafeBufferPointer { boltffiErrorBuffer in
+                        completion?(completionContext, FfiStatus(code: 1), boltffi_buf_from_bytes(boltffiErrorBuffer.baseAddress, UInt(boltffiErrorBuffer.count)))
+                    }
                 } catch {
-                    let boltffiErrorBytes = boltffiEncode { boltffiErrorWriter in boltffiErrorWriter.writeI32((error as? LoadError)!.rawValue) }
+                    let boltffiErrorBytes = boltffiEncodeUnexpectedCallbackError(error)
                     boltffiErrorBytes.withUnsafeBufferPointer { boltffiErrorBuffer in
                         completion?(completionContext, FfiStatus(code: 1), boltffi_buf_from_bytes(boltffiErrorBuffer.baseAddress, UInt(boltffiErrorBuffer.count)))
                     }

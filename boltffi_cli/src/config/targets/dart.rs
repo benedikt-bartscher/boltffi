@@ -12,10 +12,10 @@ pub struct DartConfig {
     pub enabled: bool,
     #[serde(
         default,
-        serialize_with = "DartConfig::serialize_native_architectures",
-        deserialize_with = "DartConfig::deserialize_native_architectures"
+        serialize_with = "DartConfig::serialize_native_targets",
+        deserialize_with = "DartConfig::deserialize_native_targets"
     )]
-    pub native_architectures: Option<Vec<RustTarget>>,
+    pub native_targets: Option<Vec<RustTarget>>,
 }
 
 impl Default for DartConfig {
@@ -23,26 +23,26 @@ impl Default for DartConfig {
         Self {
             output: default_dart_output(),
             enabled: false,
-            native_architectures: None,
+            native_targets: None,
         }
     }
 }
 
 impl DartConfig {
-    fn deserialize_native_architectures<'de, D>(
+    fn deserialize_native_targets<'de, D>(
         deserializer: D,
     ) -> Result<Option<Vec<RustTarget>>, D::Error>
     where
         D: Deserializer<'de>,
     {
         Option::<Vec<String>>::deserialize(deserializer)?
-            .map(|architectures| {
-                architectures
+            .map(|targets| {
+                targets
                     .into_iter()
-                    .map(|architecture| {
-                        RustTarget::from_dart_native_name(&architecture).ok_or_else(|| {
+                    .map(|target| {
+                        RustTarget::from_dart_native_name(&target).ok_or_else(|| {
                             <D::Error as serde::de::Error>::custom(format!(
-                                "unsupported Dart native architecture {architecture}"
+                                "unsupported Dart native target {target}"
                             ))
                         })
                     })
@@ -51,17 +51,17 @@ impl DartConfig {
             .transpose()
     }
 
-    fn serialize_native_architectures<S>(
-        architectures: &Option<Vec<RustTarget>>,
+    fn serialize_native_targets<S>(
+        targets: &Option<Vec<RustTarget>>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        architectures
+        targets
             .as_deref()
-            .map(|architectures| {
-                architectures
+            .map(|targets| {
+                targets
                     .iter()
                     .map(|target| {
                         target.dart_native_name().ok_or_else(|| {
