@@ -109,20 +109,27 @@ export class AsyncFutureManager {
       entry.resolve(handle);
     } else if (status < 0) {
       this.pendingFutures.delete(handle);
-      entry.reject(this.extractAsyncError(handle, status, entry));
+      entry.reject(
+        this.extractAsyncError(handle, status, entry.panicMessage, entry.free)
+      );
     }
   }
 
-  private extractAsyncError(handle: number, status: number, entry: PendingFuture): Error {
+  private extractAsyncError(
+    handle: number,
+    status: number,
+    panicMessage: (handle: number) => number,
+    free: (handle: number) => void
+  ): Error {
     if (status === WasmPollStatus.Panicked && this._module) {
-      const bufPtr = entry.panicMessage(handle);
+      const bufPtr = panicMessage(handle);
       const reader = this._module.readerFromBuf(bufPtr);
       const message = reader.readString();
       this._module.freeBuf(bufPtr);
-      entry.free(handle);
+      free(handle);
       return new BoltFFIPanicError(message);
     }
-    entry.free(handle);
+    free(handle);
     if (status === WasmPollStatus.Cancelled) {
       return new BoltFFICancelledError();
     }
@@ -135,17 +142,23 @@ export class AsyncFutureManager {
     panicMessage: (handle: number) => number,
     free: (handle: number) => void
   ): Promise<number> {
+    // Poll before registering. An async fn that never yields — the common
+    // case, and the whole of `async_add` — was paying a Map insert, a Map
+    // delete, a five-field entry object and a `new Promise` executor to
+    // discover on the very next line that it was already done. `wake()` only
+    // adds to a set and queues a microtask, so a wake raised from inside
+    // `pollSync` cannot observe the window where the entry is absent.
+    const status = pollSync(handle);
+    if (status === WasmPollStatus.Ready) {
+      return Promise.resolve(handle);
+    }
+    if (status < 0) {
+      return Promise.reject(
+        this.extractAsyncError(handle, status, panicMessage, free)
+      );
+    }
     return new Promise((resolve, reject) => {
       this.pendingFutures.set(handle, { resolve, reject, pollSync, panicMessage, free });
-
-      const status = pollSync(handle);
-      if (status === WasmPollStatus.Ready) {
-        this.pendingFutures.delete(handle);
-        resolve(handle);
-      } else if (status < 0) {
-        this.pendingFutures.delete(handle);
-        reject(this.extractAsyncError(handle, status, { resolve, reject, pollSync, panicMessage, free }));
-      }
     });
   }
 }

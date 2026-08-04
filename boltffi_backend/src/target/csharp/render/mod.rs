@@ -2062,6 +2062,7 @@ pub(super) struct Module<'module> {
     namespace: &'module Namespace,
     class_name: Identifier,
     library: Literal,
+    copy_buffer_entry: Literal,
 }
 
 impl<'module> Module<'module> {
@@ -2069,11 +2070,13 @@ impl<'module> Module<'module> {
         namespace: &'module Namespace,
         class_name: Identifier,
         library: Literal,
+        copy_buffer_entry: Literal,
     ) -> Self {
         Self {
             namespace,
             class_name,
             library,
+            copy_buffer_entry,
         }
     }
 
@@ -2135,6 +2138,18 @@ impl<'module> Module<'module> {
                     }
                 }
             }
+        }
+
+        let wire_runtime = WireTemplate.render()?;
+        if support.contains_key(&wire_runtime) {
+            native_functions
+                .entry(HelperId::new(CanonicalName::single("csharp_copy_buffer")))
+                .or_insert(Statement::new(
+                    CopyBufferTemplate {
+                        entry_point: &self.copy_buffer_entry,
+                    }
+                    .render()?,
+                ));
         }
 
         let native_functions = native_functions.into_values().collect::<Vec<_>>();
