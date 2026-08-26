@@ -92,6 +92,20 @@ impl<'package> Writer<'package> {
                     [wire_value],
                 )
             }
+            // A transparent enum's payload records carry no tagged
+            // `_boltffi_wire` of their own — the tag depends on which enum a
+            // shared payload is written through — so the enum class
+            // dispatches over the value instead.
+            EnumCodec::Data {
+                class_name,
+                transparent: true,
+            } => Ok(Expression::call(
+                CallExpression::new(Expression::attribute(
+                    Expression::identifier(class_name),
+                    Identifier::parse("_boltffi_wire_value")?,
+                ))
+                .positional(value),
+            )),
             EnumCodec::Data { .. } => Ok(Expression::call(CallExpression::new(
                 Expression::attribute(value, Identifier::parse("_boltffi_wire")?),
             ))),
