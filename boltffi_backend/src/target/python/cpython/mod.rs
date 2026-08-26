@@ -844,6 +844,64 @@ mod tests {
     }
 
     #[test]
+    fn python_target_renders_transparent_enums_through_the_class_dispatch() {
+        let output = target()
+            .render(&bindings(
+                r#"
+                #[data]
+                pub struct Ping {
+                    label: String,
+                }
+
+                #[data]
+                pub enum Envelope {
+                    Unset,
+                    #[boltffi::transparent]
+                    Ping(Ping),
+                }
+
+                #[data]
+                pub struct Wrapper {
+                    message: Envelope,
+                }
+
+                #[export]
+                pub fn echo_wrapper(wrapper: Wrapper) -> Wrapper {
+                    wrapper
+                }
+
+                #[export]
+                pub fn echo_envelopes(envelopes: Vec<Envelope>) -> Vec<Envelope> {
+                    envelopes
+                }
+                "#,
+            ))
+            .expect("Python target should render transparent enums");
+        let init = file(&output, "demo/__init__.py");
+        let stub = file(&output, "demo/__init__.pyi");
+        let native = extension(&output);
+
+        // the payload record conforms to the enum class
+        assert!(init.contains("class Ping(Envelope):"));
+        assert!(stub.contains("class Ping(Envelope):"));
+        // no wrapper class is synthesized for the transparent variant
+        assert!(!init.contains("class EnvelopePing"));
+        assert!(!stub.contains("class EnvelopePing"));
+        // the tag lives on the enum class, so every write dispatches there:
+        // the record field, sequence elements, and the C extension encoder
+        assert!(init.contains("def _boltffi_wire_value(cls, value) -> bytes:"));
+        assert!(init.contains("Envelope._boltffi_wire_value(self.message)"));
+        assert!(
+            init.contains(
+                "lambda __boltffi_value_0: Envelope._boltffi_wire_value(__boltffi_value_0)"
+            )
+        );
+        assert!(native.contains("\"_boltffi_wire_value\""));
+        // reads produce the payload record directly
+        assert!(init.contains("return Ping._boltffi_from_reader(reader)"));
+    }
+
+    #[test]
     fn python_target_renders_record_vector_lengths_from_field_value() {
         let output = target()
             .render(&bindings(
