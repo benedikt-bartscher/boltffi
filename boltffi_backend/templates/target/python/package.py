@@ -921,7 +921,9 @@ __all__ = [
 {%- endif %}
 {%- if let Some(wire) = enumeration.wire %}
 {%- for variant in wire.variants %}
+{%- if !variant.transparent() %}
     "{{ variant.class_name }}",
+{%- endif %}
 {%- endfor %}
 {%- endif %}
 {%- endfor %}

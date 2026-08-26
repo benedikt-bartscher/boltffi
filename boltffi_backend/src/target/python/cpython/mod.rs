@@ -884,9 +884,11 @@ mod tests {
         // the payload record conforms to the enum class
         assert!(init.contains("class Ping(Envelope):"));
         assert!(stub.contains("class Ping(Envelope):"));
-        // no wrapper class is synthesized for the transparent variant
+        // no wrapper class is synthesized for the transparent variant, and
+        // __all__ does not name one either
         assert!(!init.contains("class EnvelopePing"));
         assert!(!stub.contains("class EnvelopePing"));
+        assert!(!init.contains("\"EnvelopePing\","));
         // the tag lives on the enum class, so every write dispatches there:
         // the record field, sequence elements, and the C extension encoder
         assert!(init.contains("def _boltffi_wire_value(cls, value) -> bytes:"));
