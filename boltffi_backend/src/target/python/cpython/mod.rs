@@ -904,6 +904,60 @@ mod tests {
     }
 
     #[test]
+    fn python_target_renders_direct_transparent_payloads_through_a_type_factory() {
+        let output = target()
+            .render(&bindings(
+                r#"
+                #[data]
+                pub struct Ping {
+                    sequence: u32,
+                }
+
+                #[data]
+                pub enum Envelope {
+                    Unset,
+                    #[boltffi::transparent]
+                    Ping(Ping),
+                }
+
+                #[data]
+                pub enum Reply {
+                    #[boltffi::transparent]
+                    Ping(Ping),
+                    Ack,
+                }
+
+                #[export]
+                pub fn echo_envelope(envelope: Envelope) -> Envelope {
+                    envelope
+                }
+
+                #[export]
+                pub fn echo_reply(reply: Reply) -> Reply {
+                    reply
+                }
+                "#,
+            ))
+            .expect("Python target should render direct transparent payloads");
+        let init = file(&output, "demo/__init__.py");
+        let stub = file(&output, "demo/__init__.pyi");
+        let native = extension(&output);
+
+        // the C type is created from python with both bases, after the enum
+        // classes exist, rather than at module init
+        assert!(init.contains("Ping = _native._make_ping((Envelope, Reply,))"));
+        assert!(native.contains("PyType_FromSpecWithBases(&boltffi_python_ping_type_spec, bases)"));
+        assert!(!native.contains("boltffi_python_setup_ping_type"));
+        // inheriting python bases makes instances GC-tracked, so the dealloc
+        // has to untrack before freeing
+        assert!(native.contains("PyObject_GC_UnTrack(self);"));
+        // the record is still the variant on both sides
+        assert!(stub.contains("class Ping(Envelope, Reply):"));
+        assert!(init.contains("return Ping._boltffi_from_reader(reader)"));
+        assert!(!init.contains("class EnvelopePing"));
+    }
+
+    #[test]
     fn python_target_renders_record_vector_lengths_from_field_value() {
         let output = target()
             .render(&bindings(

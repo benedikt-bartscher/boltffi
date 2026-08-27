@@ -640,7 +640,11 @@ class {{ exception_name }}(RuntimeError):
 {% for record in records %}
 {%- match record.wire %}
 {%- when RecordWire::Fixed(fixed) %}
+{%- if record.bases.is_empty() %}
 {{ record.class_name }} = _native.{{ record.class_name }}
+{%- else %}
+{{ record.class_name }} = _native.{{ record.type_factory }}(({% for base in record.bases %}{{ base }},{% if !loop.last %} {% endif %}{% endfor %}))
+{%- endif %}
 {{ record.class_name }}.__module__ = __name__
 {%- if !record.documentation.is_empty() %}
 {{ record.class_name }}.__doc__ = {{ record.documentation.literal() }}

@@ -31,6 +31,9 @@ pub struct RecordClass {
     /// The enum classes of the transparent enums this record is a payload
     /// of; the record class inherits them.
     pub bases: Vec<Identifier>,
+    /// Extension factory that creates a conforming direct record's type with
+    /// its bases; unused when the record has none.
+    pub type_factory: Identifier,
     pub constructors: Vec<AssociatedCallable>,
     pub static_methods: Vec<AssociatedCallable>,
     pub instance_methods: Vec<AssociatedCallable>,
@@ -66,17 +69,8 @@ impl RecordClass {
                 record.fields(),
                 record.layout(),
             )?),
-            // A direct record is a C-native class and cannot inherit the
-            // Python enum class a transparent variant would require.
-            bases: match package.transparent_conformances(record.id())?.is_empty() {
-                true => Vec::new(),
-                false => {
-                    return Err(Error::UnsupportedTarget {
-                        target: "python",
-                        shape: "transparent variant with a direct record payload",
-                    });
-                }
-            },
+            bases: package.transparent_conformances(record.id())?,
+            type_factory: symbols.type_factory().clone(),
             constructors: Self::constructors(record.initializers(), &symbols, package)?,
             static_methods: Self::static_methods(record.methods(), &symbols, package)?,
             instance_methods: Self::instance_methods(record.methods(), &symbols, package)?,
@@ -107,6 +101,7 @@ impl RecordClass {
             constants: package.constants_for_owner(ConstantOwner::Record(record.id()))?,
             wire: RecordWire::Fields(wire_fields),
             bases: package.transparent_conformances(record.id())?,
+            type_factory: symbols.type_factory().clone(),
             constructors: Self::constructors(record.initializers(), &symbols, package)?,
             static_methods: Self::static_methods(record.methods(), &symbols, package)?,
             instance_methods: Self::instance_methods(record.methods(), &symbols, package)?,

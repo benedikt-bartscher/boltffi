@@ -983,9 +983,12 @@ Constraints, checked at generate time:
   leaving the new variant wrapped.
 - Error enums (`#[error]`) cannot have transparent variants — the sealed
   interface cannot extend `Exception`.
-- Python additionally requires the payload record to be encoded (a record
-  containing only fixed-width primitives is a C-native class there and
-  cannot inherit the enum class).
+
+A record containing only fixed-width primitives is a C-native class in
+Python; as a transparent payload its type is built during package import,
+with the enum classes as its bases, instead of at extension init. It is
+therefore not an attribute of the extension module itself — reach it through
+the package, as you would any other record.
 
 Transparent variants are currently supported by the Kotlin and Python
 backends; the other backends reject them at generate time.
