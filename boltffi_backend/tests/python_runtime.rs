@@ -153,12 +153,12 @@ fn python_package_runs_transparent_variants_against_the_interpreter() {
     let stub = root.join("stub.c");
     let native = fs::read_to_string(&extension).expect("generated extension source");
     fs::write(&stub, stub_library(&native)).expect("write stub source");
-    build_shared_library(&compiler, &stub, &package.join("libdemo.so"), &[]);
+    build_shared_library(&compiler, &stub, &package.join(cdylib_name()), &[]);
     build_shared_library(
         &compiler,
         &extension,
         &package.join("_native.so"),
-        &includes,
+        &[includes, extension_flags()].concat(),
     );
 
     let script = root.join("check.py");
@@ -262,11 +262,30 @@ fn stub_library(native: &str) -> String {
         .collect()
 }
 
-fn build_shared_library(compiler: &str, source: &Path, output: &Path, includes: &[String]) {
+/// The library filename the generated package looks for, which it derives
+/// from `sys.platform`.
+fn cdylib_name() -> &'static str {
+    match cfg!(target_os = "macos") {
+        true => "libdemo.dylib",
+        false => "libdemo.so",
+    }
+}
+
+/// Extra flags the extension itself needs. The interpreter supplies the
+/// CPython symbols at load time, which the mach-o linker rejects as
+/// undefined unless it is told to look them up dynamically.
+fn extension_flags() -> Vec<String> {
+    match cfg!(target_os = "macos") {
+        true => vec!["-undefined".to_owned(), "dynamic_lookup".to_owned()],
+        false => Vec::new(),
+    }
+}
+
+fn build_shared_library(compiler: &str, source: &Path, output: &Path, flags: &[String]) {
     let build = Command::new(compiler)
         .arg("-shared")
         .arg("-fPIC")
-        .args(includes)
+        .args(flags)
         .arg("-o")
         .arg(output)
         .arg(source)
