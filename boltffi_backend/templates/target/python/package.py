@@ -516,7 +516,7 @@ class {{ enumeration.class_name }}:
     def _boltffi_wire_value(cls, value) -> bytes:
 {%- for variant in wire.variants %}
 {%- if let Some(payload) = variant.transparent_payload %}
-        if type(value) is {{ payload }}:
+        if isinstance(value, {{ payload }}):
             return _boltffi_wire_u32({{ variant.tag }}) + value._boltffi_wire()
 {%- endif %}
 {%- endfor %}

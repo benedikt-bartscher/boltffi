@@ -154,22 +154,9 @@ impl Record {
     /// The sealed interfaces of the transparent enums whose variants carry
     /// this record as their payload.
     fn conformances(id: RecordId, context: &RenderContext<Native>) -> Vec<TypeName> {
-        use boltffi_binding::{DeclarationRef, EnumDecl};
         context
-            .bindings()
-            .decls()
-            .iter()
-            .filter_map(|declaration| match DeclarationRef::from(declaration) {
-                DeclarationRef::Enum(EnumDecl::Data(enumeration))
-                    if enumeration
-                        .variants()
-                        .iter()
-                        .any(|variant| variant.transparent_payload() == Some(id)) =>
-                {
-                    Some(Name::new(enumeration.name()).type_name())
-                }
-                _ => None,
-            })
+            .transparent_conformances(id)
+            .map(|name| Name::new(name).type_name())
             .collect()
     }
 

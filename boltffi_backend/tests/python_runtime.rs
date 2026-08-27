@@ -94,6 +94,20 @@ match note:
     case _:
         raise AssertionError("payload did not match its base")
 
+# both payload lanes are subclassable, and a subclass still carries its
+# variant tag: dispatching on the exact type would fall through to the
+# untagged payload encoding and decode as the wrong variant
+class SubPing(demo.Ping):
+    pass
+
+class SubNote(demo.Note):
+    pass
+
+sub_ping, sub_note = SubPing(sequence=7), SubNote(body="hi")
+assert demo.Envelope._boltffi_wire_value(sub_ping) == demo.Envelope._boltffi_wire_value(ping)
+assert demo.Reply._boltffi_wire_value(sub_ping) == demo.Reply._boltffi_wire_value(ping)
+assert demo.Envelope._boltffi_wire_value(sub_note) == demo.Envelope._boltffi_wire_value(note)
+
 # wrapped and unit variants keep working next to the transparent ones
 demo.Envelope._boltffi_wire_value(demo.EnvelopeRaw("x"))
 demo.Envelope._boltffi_wire_value(demo.EnvelopeUnset())

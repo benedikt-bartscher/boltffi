@@ -479,6 +479,49 @@ mod tests {
         assert_eq!(output.coverage().unsupported().len(), 8);
     }
 
+    /// A conforming payload record's type is built by a factory the package
+    /// calls with the enum bases, so the extension emits no module-init setup
+    /// for it. Pruning the transparent enum has to put the record back on the
+    /// plain lane in both files at once — otherwise the package binds
+    /// `_native.Ping`, which module init never created, and importing it
+    /// raises `AttributeError`.
+    #[test]
+    fn python_target_puts_payloads_of_pruned_transparent_enums_back_on_the_plain_lane() {
+        let output = target()
+            .render_partial(&bindings(
+                r#"
+                use boltffi::InternedString;
+
+                boltffi::interned_string_pool! {
+                    pub BrowserName {
+                        Chrome = "Chrome",
+                    }
+                }
+
+                #[data]
+                pub struct Ping {
+                    sequence: u32,
+                }
+
+                #[data]
+                pub enum Envelope {
+                    #[boltffi::transparent]
+                    Ping(Ping),
+                    Name(InternedString<BrowserName>),
+                }
+                "#,
+            ))
+            .expect("partial Python render should prune the InternedString enum");
+        let init = file(&output, "demo/__init__.py");
+        let extension = extension(&output);
+
+        assert!(!init.contains("Envelope"));
+        assert!(init.contains("Ping = _native.Ping"));
+        assert!(extension.contains("static int boltffi_python_setup_ping_type(PyObject *module)"));
+        assert!(extension.contains("if (!boltffi_python_setup_ping_type(module))"));
+        assert!(!extension.contains("boltffi_python_make_ping_type"));
+    }
+
     #[test]
     fn python_target_completes_cpython_module() {
         let output = target()

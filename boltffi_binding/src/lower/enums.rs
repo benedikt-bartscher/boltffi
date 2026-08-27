@@ -74,6 +74,21 @@ fn lower_c_style<S: SurfaceLower>(
     initializers: Vec<InitializerDecl<S>>,
     enum_methods: Vec<ExportedMethodDecl<S, NativeSymbol>>,
 ) -> Result<CStyleEnumDecl<S>, LowerError> {
+    // Every variant of a C-style enum is a unit variant, so none of them can
+    // carry the payload record `#[boltffi::transparent]` renders as. The data
+    // lane rejects the same shape in `validate_transparent_variants`; without
+    // this the attribute would be dropped without a word.
+    if let Some(variant) = enumeration
+        .variants
+        .iter()
+        .find(|variant| variant.transparent)
+    {
+        return Err(LowerError::invalid_transparent_variant(
+            enumeration.name.spelling(),
+            variant.name.spelling(),
+            "must carry exactly one payload field",
+        ));
+    }
     Ok(CStyleEnumDecl::new(
         ids.enumeration(&enumeration.id)?,
         CanonicalName::from(&enumeration.name),
@@ -1468,6 +1483,29 @@ mod tests {
         assert!(!enumeration.variants()[0].transparent());
         assert!(enumeration.variants()[1].transparent());
         assert!(enumeration.variants()[1].transparent_payload().is_some());
+    }
+
+    /// An all-unit enum takes the C-style lane, which never reaches
+    /// `validate_transparent_variants`, so the attribute would otherwise be
+    /// dropped in silence.
+    #[test]
+    fn c_style_enum_rejects_transparent_variants() {
+        let mut fast = unit_variant("fast");
+        fast.transparent = true;
+        let error = lower_contract_result::<Native>(
+            Vec::new(),
+            vec![enumeration(
+                "demo::Mode",
+                "Mode",
+                vec![fast, unit_variant("slow")],
+            )],
+        )
+        .expect_err("a unit variant carries no payload record to render as");
+
+        assert!(matches!(
+            error.kind(),
+            LowerErrorKind::InvalidTransparentVariant { .. }
+        ));
     }
 
     #[test]

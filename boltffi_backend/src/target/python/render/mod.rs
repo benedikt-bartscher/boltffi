@@ -325,20 +325,9 @@ impl<'bindings> Package<'bindings> {
     /// them so `isinstance` against the enum class holds for payloads read
     /// straight off the wire.
     pub fn transparent_conformances(&self, record_id: RecordId) -> Result<Vec<Identifier>> {
-        self.declarations
-            .enums
-            .iter()
-            .filter_map(|enumeration| match enumeration {
-                EnumDecl::Data(enumeration)
-                    if enumeration
-                        .variants()
-                        .iter()
-                        .any(|variant| variant.transparent_payload() == Some(record_id)) =>
-                {
-                    Some(Identifier::parse(Name::new(enumeration.name()).class()))
-                }
-                _ => None,
-            })
+        self.context
+            .transparent_conformances(record_id)
+            .map(|name| Identifier::parse(Name::new(name).class()))
             .collect()
     }
 
