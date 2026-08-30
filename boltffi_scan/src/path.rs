@@ -8,10 +8,24 @@ pub(super) struct ModulePath {
     segments: Vec<String>,
 }
 
+/// The module a package is reachable under.
+///
+/// Segments of a path are Rust identifiers, and a package name is not one:
+/// cargo allows a hyphen where the module tree has an underscore. Ids are
+/// compared against this spelling in several places, so it has one definition.
+pub(crate) fn module_name(package: &str) -> String {
+    package.replace('-', "_")
+}
+
 impl ModulePath {
+    /// Root of a crate's module path.
+    ///
+    /// Dependencies arrive already normalised, through
+    /// `ExportedPackage::module_name`, so only the root reaches this with a
+    /// raw package name.
     pub(super) fn root(crate_name: impl Into<String>) -> Self {
         Self {
-            segments: vec![crate_name.into()],
+            segments: vec![module_name(&crate_name.into())],
         }
     }
 
@@ -95,6 +109,10 @@ impl ModuleScope {
 
     pub(super) fn source_span(&self, span: Span) -> Option<SourceSpan> {
         self.spans.as_ref()?.source_span(span)
+    }
+
+    pub(super) fn source_file(&self) -> Option<&SourceFile> {
+        self.spans.as_ref().map(SpanMap::source_file)
     }
 
     pub(super) fn expand(&self, path: &syn::Path) -> PathExpansion {
@@ -232,6 +250,10 @@ impl SpanMap {
         let start = self.offset(span.start())?;
         let end = self.offset(span.end())?;
         (end >= start).then(|| SourceSpan::new(self.file.clone(), start, end))
+    }
+
+    fn source_file(&self) -> &SourceFile {
+        &self.file
     }
 
     fn offset(&self, location: LineColumn) -> Option<usize> {

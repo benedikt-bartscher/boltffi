@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path as FsPath;
 
-use boltffi_ast::{PackageInfo, Path, PathRoot, PathSegment, SourceContract};
+use boltffi_ast::{PackageInfo, Path, PathRoot, PathSegment, SourceContract, SourceFile};
 
 use crate::declared_types::DeclaredTypes;
 use crate::input::ScanInput;
 use crate::marked::MarkedItems;
 use crate::package_graph::{ExportedPackage, LoadError, PackageGraph};
-use crate::path::ImportLookup;
+use crate::path::{ImportLookup, module_name};
 use crate::source_tree::SourceTree;
-use crate::{ModuleScope, ScanError, items};
+use crate::{ActiveCfg, ModuleScope, ScanError, items};
 
 pub fn scan(input: &ScanInput) -> Result<SourceContract, ScanError> {
     let source_tree = SourceTree::load_with_cfg(input.root(), &input.package().name, input.cfg())?;
@@ -20,6 +20,7 @@ pub struct PackageScan {
     root: SourceContract,
     complete: SourceContract,
     root_visible_paths: HashMap<String, Path>,
+    data_source_files: HashMap<String, SourceFile>,
 }
 
 impl PackageScan {
@@ -37,6 +38,13 @@ impl PackageScan {
         &self.complete
     }
 
+    /// Returns the source file that declares a scanned record or enum.
+    ///
+    /// File identity remains available when the compiler cannot provide byte locations for parsed source spans.
+    pub fn data_source_file(&self, id: &str) -> Option<&SourceFile> {
+        self.data_source_files.get(id)
+    }
+
     pub fn root_with_support(&self) -> SourceContract {
         let root = self.root_crate();
         let mut source = self.root.clone();
@@ -46,7 +54,7 @@ impl PackageScan {
             .iter()
             .cloned()
             .map(|mut record| {
-                if !self.exposes_support_methods(&root, record.id.as_str()) {
+                if !self.exposes_declaration(&root, record.id.as_str()) {
                     record.methods.clear();
                 }
                 record
@@ -58,7 +66,7 @@ impl PackageScan {
             .iter()
             .cloned()
             .map(|mut enumeration| {
-                if !self.exposes_support_methods(&root, enumeration.id.as_str()) {
+                if !self.exposes_declaration(&root, enumeration.id.as_str()) {
                     enumeration.methods.clear();
                 }
                 enumeration
@@ -67,14 +75,35 @@ impl PackageScan {
         source.classes = self.complete.classes.clone();
         source.traits = self.complete.traits.clone();
         source.customs = self.complete.customs.clone();
+        source.streams = self
+            .complete
+            .streams
+            .iter()
+            .filter(|stream| {
+                stream.owner.as_ref().map_or_else(
+                    || self.exposes_declaration(&root, stream.id.as_str()),
+                    |owner| self.exposes_declaration(&root, owner.as_str()),
+                )
+            })
+            .cloned()
+            .collect();
+        source.constants = self
+            .complete
+            .constants
+            .iter()
+            .filter(|constant| {
+                constant.owner.as_ref().map_or_else(
+                    || self.exposes_declaration(&root, constant.id.as_str()),
+                    |owner| self.exposes_declaration(&root, owner.as_str()),
+                )
+            })
+            .cloned()
+            .collect();
         source.functions = self
             .complete
             .functions
             .iter()
-            .filter(|function| {
-                root.owns(function.id.as_str())
-                    || self.root_visible_paths.contains_key(function.id.as_str())
-            })
+            .filter(|function| self.exposes_declaration(&root, function.id.as_str()))
             .cloned()
             .collect();
         source
@@ -88,7 +117,7 @@ impl PackageScan {
         RootCrate::new(&self.root.package.name)
     }
 
-    fn exposes_support_methods(&self, root: &RootCrate, id: &str) -> bool {
+    fn exposes_declaration(&self, root: &RootCrate, id: &str) -> bool {
         root.owns(id) || self.root_visible_paths.contains_key(id)
     }
 }
@@ -114,7 +143,7 @@ impl RootCrate {
 
 pub fn scan_package(input: &ScanInput) -> Result<PackageScan, ScanError> {
     let root_tree = SourceTree::load_with_cfg(input.root(), &input.package().name, input.cfg())?;
-    let dependencies = dependencies(input.manifest_dir())?;
+    let dependencies = dependencies(input.manifest_dir(), input.cfg())?;
     let direct_dependency_modules = dependencies.direct_modules();
     let complete_tree = SourceTree::combine(
         dependencies
@@ -124,23 +153,55 @@ pub fn scan_package(input: &ScanInput) -> Result<PackageScan, ScanError> {
     );
     let root_marked = MarkedItems::collect(&root_tree)?;
     let complete_marked = MarkedItems::collect(&complete_tree)?;
+    let data_source_files = data_source_files(&root_marked);
     let declared_types = DeclaredTypes::index(&complete_tree, &complete_marked)?;
     let root =
         scan_marked_with_declarations(&root_marked, &declared_types, input.package().clone())?;
     let complete =
         scan_marked_with_declarations(&complete_marked, &declared_types, input.package().clone())?;
+    // The ids being matched here carry the module name, so the root has to be
+    // spelled the same way: a hyphenated package would match nothing, and its
+    // own items would be emitted unqualified.
+    let root_module = module_name(&input.package().name);
     let root_visible_paths = root_visible_paths(
         &declared_types,
         &complete_tree,
         &complete_marked,
-        &input.package().name,
+        &root_module,
         &direct_dependency_modules,
     );
     Ok(PackageScan {
         root,
         complete,
         root_visible_paths,
+        data_source_files,
     })
+}
+
+fn data_source_files(marked: &MarkedItems<'_>) -> HashMap<String, SourceFile> {
+    let records = marked.records().iter().filter_map(|record| {
+        record.scope().source_file().cloned().map(|source_file| {
+            (
+                record.module().qualified(&record.item().ident.to_string()),
+                source_file,
+            )
+        })
+    });
+    let enumerations = marked.enums().iter().filter_map(|enumeration| {
+        enumeration
+            .scope()
+            .source_file()
+            .cloned()
+            .map(|source_file| {
+                (
+                    enumeration
+                        .module()
+                        .qualified(&enumeration.item().ident.to_string()),
+                    source_file,
+                )
+            })
+    });
+    records.chain(enumerations).collect()
 }
 
 pub fn scan_source(
@@ -225,7 +286,10 @@ impl PackageDependencies {
     }
 }
 
-fn dependencies(manifest_dir: Option<&FsPath>) -> Result<PackageDependencies, ScanError> {
+fn dependencies(
+    manifest_dir: Option<&FsPath>,
+    active_cfg: &ActiveCfg,
+) -> Result<PackageDependencies, ScanError> {
     let Some(manifest_dir) = manifest_dir else {
         return Ok(PackageDependencies::empty());
     };
@@ -236,13 +300,21 @@ fn dependencies(manifest_dir: Option<&FsPath>) -> Result<PackageDependencies, Sc
     let reachable = graph
         .reachable_exported_dependencies(graph.root_id())
         .into_iter()
-        .map(dependency_tree)
+        .map(|package| dependency_tree(package, active_cfg))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(PackageDependencies { direct, reachable })
 }
 
-fn dependency_tree(package: ExportedPackage) -> Result<SourceTree, ScanError> {
-    SourceTree::load(package.source_file(), package.module_name())
+fn dependency_tree(
+    package: ExportedPackage,
+    active_cfg: &ActiveCfg,
+) -> Result<SourceTree, ScanError> {
+    let dependency_cfg = active_cfg.for_package(package.resolved_features());
+    SourceTree::load_with_cfg(
+        package.source_file(),
+        package.module_name(),
+        &dependency_cfg,
+    )
 }
 
 fn package_graph_error(error: LoadError) -> ScanError {
@@ -448,6 +520,32 @@ mod tests {
 
     fn source_tree(crate_name: &str, source: &str) -> SourceTree {
         SourceTree::in_memory(crate_name, parse(source).items).expect("source tree")
+    }
+
+    /// Declaration ids are Rust paths, so the crate segment is the module name.
+    ///
+    /// Cargo allows a hyphen in a package name where the module tree has an
+    /// underscore. Carrying the package name through unchanged produced ids
+    /// like `my-root::Point`, which no consumer can match against a crate
+    /// path: the macro compares them to `CARGO_PKG_NAME` with hyphens
+    /// replaced, and rejects the declaration as belonging to another crate.
+    /// Every fixture here is named `demo`, so nothing caught it.
+    #[test]
+    fn declaration_ids_use_the_module_name_of_a_hyphenated_package() {
+        let contract = scan_file(
+            parse("#[data]\npub struct Point { pub x: f64 }\n"),
+            PackageInfo::new("my-root", None),
+        )
+        .expect("scan");
+
+        assert_eq!(
+            contract
+                .records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["my_root::Point"],
+        );
     }
 
     fn point(contract: &SourceContract) -> &RecordDef {
@@ -715,6 +813,26 @@ mod tests {
         assert_eq!(
             value_return(&contract.functions[0].returns),
             &enumeration("demo::model::ForeignKind", "ForeignKind")
+        );
+    }
+
+    #[test]
+    fn qualified_path_resolves_type_reexported_by_name() {
+        let contract = scan(
+            "pub mod model { #[data] pub enum ForeignKind { Guest, Member } } \
+             pub mod session { pub use crate::model::ForeignKind; } \
+             pub mod api { \
+                 #[export] pub fn echo(kind: crate::session::ForeignKind) -> crate::session::ForeignKind { kind } \
+             }",
+        );
+
+        assert_eq!(
+            contract.functions[0].parameters[0].type_expr,
+            enumeration("demo::model::ForeignKind", "crate::session::ForeignKind")
+        );
+        assert_eq!(
+            value_return(&contract.functions[0].returns),
+            &enumeration("demo::model::ForeignKind", "crate::session::ForeignKind")
         );
     }
 
@@ -1249,6 +1367,7 @@ mod tests {
             root: scan_tree(root, PackageInfo::new("demo", None)).expect("root scans"),
             complete: scan_tree(complete, PackageInfo::new("demo", None)).expect("complete scans"),
             root_visible_paths: HashMap::new(),
+            data_source_files: HashMap::new(),
         };
         let source = scan.root_with_support();
         let counter = source
@@ -1258,6 +1377,57 @@ mod tests {
             .expect("dependency class stays in root support contract");
 
         assert_eq!(counter.methods.len(), 2);
+    }
+
+    #[test]
+    fn root_with_support_keeps_visible_dependency_class_streams_and_constants() {
+        let root = source_tree("demo", "");
+        let model = source_tree(
+            "model",
+            "use std::sync::Arc; \
+             use boltffi::EventSubscription; \
+             #[export] pub const BANNER: &str = \"model\"; \
+             pub struct ForeignCounter { value: i32 } \
+             #[export] impl ForeignCounter { \
+                 pub fn new(initial: i32) -> Self { Self { value: initial } } \
+                 #[ffi_stream(item = i32)] \
+                 pub fn ticks(&self) -> Arc<EventSubscription<i32>> { todo!() } \
+                 pub const VERSION: u32 = 1; \
+             }",
+        );
+        let complete = SourceTree::combine([model, root.clone()]);
+        let scan = PackageScan {
+            root: scan_tree(root, PackageInfo::new("demo", None)).expect("root scans"),
+            complete: scan_tree(complete, PackageInfo::new("demo", None)).expect("complete scans"),
+            root_visible_paths: HashMap::from([(
+                "model::ForeignCounter".to_owned(),
+                Path::new(
+                    PathRoot::Relative,
+                    vec![
+                        PathSegment::new("model"),
+                        PathSegment::new("ForeignCounter"),
+                    ],
+                ),
+            )]),
+            data_source_files: HashMap::new(),
+        };
+        let source = scan.root_with_support();
+
+        assert!(source.streams.iter().any(|stream| {
+            stream.id == StreamId::new("model::ForeignCounter::ticks")
+                && stream.owner == Some(ClassId::new("model::ForeignCounter"))
+        }));
+        assert!(source.constants.iter().any(|constant| {
+            constant.id == ConstantId::new("model::ForeignCounter::VERSION")
+                && constant.owner
+                    == Some(ConstantOwner::Class(ClassId::new("model::ForeignCounter")))
+        }));
+        assert!(
+            !source
+                .constants
+                .iter()
+                .any(|constant| constant.id == ConstantId::new("model::BANNER"))
+        );
     }
 
     #[test]
@@ -1307,6 +1477,7 @@ mod tests {
                     ),
                 ),
             ]),
+            data_source_files: HashMap::new(),
         };
         let source = scan.root_with_support();
         let point = source
@@ -1358,6 +1529,7 @@ mod tests {
             )
             .expect("complete scans"),
             root_visible_paths: HashMap::new(),
+            data_source_files: HashMap::new(),
         };
         let source = scan.root_with_support();
         let point = source

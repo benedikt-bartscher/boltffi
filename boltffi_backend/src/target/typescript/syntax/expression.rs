@@ -117,6 +117,12 @@ impl Expression {
         Self(format!("{receiver}.{property}"))
     }
 
+    /// Same as [`Self::property`], but short-circuits to `undefined`
+    /// instead of throwing when `receiver` is itself `null`/`undefined`.
+    pub fn optional_property(receiver: Self, property: Identifier) -> Self {
+        Self(format!("{receiver}?.{property}"))
+    }
+
     pub fn static_call(ty: impl fmt::Display, method: Identifier, arguments: ArgumentList) -> Self {
         Self(format!("{ty}.{method}({arguments})"))
     }
@@ -155,6 +161,10 @@ impl Expression {
         Self("null".to_owned())
     }
 
+    pub fn undefined() -> Self {
+        Self("undefined".to_owned())
+    }
+
     pub fn nan() -> Self {
         Self("Number.NaN".to_owned())
     }
@@ -177,6 +187,12 @@ impl Expression {
 
     pub fn strict_not_equal(self, other: Self) -> Self {
         Self(format!("{self} !== {other}"))
+    }
+
+    pub fn default_when_undefined(self, default: Self) -> Self {
+        self.clone()
+            .strict_equal(Self::undefined())
+            .conditional(default, self)
     }
 
     pub fn construct(ty: impl fmt::Display, arguments: ArgumentList) -> Self {

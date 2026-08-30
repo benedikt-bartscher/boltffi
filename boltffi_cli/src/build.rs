@@ -132,17 +132,12 @@ pub struct BuildOptions {
     pub release: bool,
     pub selection: BuildSelection,
     pub on_output: Option<OutputCallback>,
+    pub extra_env: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BuildSelection {
-    Default {
-        cargo_args: Vec<String>,
-    },
-    Package {
-        package: String,
-        cargo_args: Vec<String>,
-    },
+    Default { cargo_args: Vec<String> },
     Expanded(Box<BindingExpansion>),
 }
 
@@ -241,7 +236,6 @@ impl<'a> Builder<'a> {
     fn package_spec(&self) -> &str {
         match &self.options.selection {
             BuildSelection::Default { .. } => self.config.library_name(),
-            BuildSelection::Package { package, .. } => package,
             BuildSelection::Expanded(expansion) => expansion.package_id(),
         }
     }
@@ -266,7 +260,7 @@ impl<'a> Builder<'a> {
                 command.arg("--lib");
                 expansion.configure_rustc(command)
             }
-            BuildSelection::Default { .. } | BuildSelection::Package { .. } => Ok(()),
+            BuildSelection::Default { .. } => Ok(()),
         }
     }
 
@@ -282,11 +276,15 @@ impl<'a> Builder<'a> {
         if !is_ios {
             command.env_remove("IPHONEOS_DEPLOYMENT_TARGET");
         }
+
+        for (key, value) in &self.options.extra_env {
+            command.env(key, value);
+        }
     }
 
     fn cargo_build_command_args(&self) -> CargoBuildCommandArgs {
         match &self.options.selection {
-            BuildSelection::Default { cargo_args } | BuildSelection::Package { cargo_args, .. } => {
+            BuildSelection::Default { cargo_args } => {
                 CargoBuildCommandArgs::from_passthrough_args(cargo_args)
             }
             BuildSelection::Expanded(expansion) => CargoBuildCommandArgs {
@@ -473,6 +471,7 @@ name = "demo"
                 release: false,
                 selection: BuildSelection::Expanded(Box::new(expansion)),
                 on_output: None,
+                extra_env: Vec::new(),
             },
         );
         let command_args = builder.cargo_build_command_args();

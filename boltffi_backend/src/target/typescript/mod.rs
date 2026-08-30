@@ -203,6 +203,13 @@ mod tests {
                 pub fn echo_vec_bool(value: Vec<bool>) -> Vec<bool> { value }
 
                 #[export]
+                pub fn fill_bytes(value: &mut [u8]) {
+                    for byte in value.iter_mut() {
+                        *byte = 7;
+                    }
+                }
+
+                #[export]
                 pub fn increment_u64(value: &mut [u64]) {
                     if let Some(first) = value.first_mut() {
                         *first += 1;
@@ -243,6 +250,18 @@ mod tests {
         )
         .expect("source scans");
         lower::<Wasm32>(&source).expect("source lowers")
+    }
+
+    fn custom_type_default_bindings() -> Bindings<Wasm32> {
+        let source = boltffi_scan::scan_file(
+            syn::parse_str(include_str!(
+                "../../../tests/fixtures/source/records/custom_type_default.rs"
+            ))
+            .expect("valid custom type default source"),
+            PackageInfo::new("demo", None),
+        )
+        .expect("custom type default source scans");
+        lower::<Wasm32>(&source).expect("custom type default source lowers")
     }
 
     fn constant_bindings() -> Bindings<Wasm32> {
@@ -805,6 +824,25 @@ mod tests {
         assert!(browser.contents().contains(
             "return _module.takePackedBytes((_exports.boltffi_function_demo_echo_bytes as Function)(__boltffi_value_allocation.ptr, __boltffi_value_allocation.len) as bigint);"
         ));
+        // A writable byte slice crosses as a direct vector: the pointer goes
+        // unframed and the host copies back what the callee wrote. Framing it
+        // as a byte buffer would decode into a `Vec` the wrapper owns, and
+        // every write would be dropped with it.
+        assert!(
+            browser
+                .contents()
+                .contains("const __boltffi_value_allocation = _module.allocU8Array(value);")
+        );
+        assert!(browser.contents().contains(
+            "_module.copyPrimitiveBufferInto(__boltffi_value_allocation, value, \"u8\");"
+        ));
+        // The free cannot be skipped when the copy back throws, so it sits in a
+        // `finally` of its own rather than after the copy in the same block.
+        assert!(
+            browser
+                .contents()
+                .contains("_module.freePrimitiveBuffer(__boltffi_value_allocation);")
+        );
         assert!(browser.contents().contains(
             "export function echoVecI32(value: readonly number[] | Int32Array): Int32Array"
         ));
@@ -1276,8 +1314,18 @@ mod tests {
             .expect("browser module");
 
         assert!(browser.contents().contains(
-            "export async function asyncAdd(left: number, right: number): Promise<number>"
+            "export async function asyncAdd(left: number, right: number, options?: { signal?: AbortSignal; cancelId?: number }): Promise<number>"
         ));
+        assert!(
+            browser
+                .contents()
+                .contains("const __boltffiSignal = options?.signal;")
+        );
+        assert!(
+            browser
+                .contents()
+                .contains("const __boltffiCancelId = options?.cancelId;")
+        );
         assert!(
             browser
                 .contents()
@@ -1287,18 +1335,30 @@ mod tests {
         assert!(
             browser
                 .contents()
-                .contains("export async function asyncName(value: string): Promise<string>")
+                .contains("if (__boltffiSignal?.aborted) throw new BoltFFICancelledError();")
         );
-        assert!(browser.contents().contains("_module.takePackedUtf8String("));
-        assert!(browser.contents().contains(
-            "export async function asyncValues(value: readonly number[] | Int32Array): Promise<Int32Array>"
-        ));
-        assert!(browser.contents().contains("_module.takeSlotI32Array()"));
+        assert!(browser.contents().contains("__boltffiHandle) =>"));
         assert!(
             browser
                 .contents()
-                .contains("export async function asyncSize(): Promise<number>")
+                .contains(", __boltffiSignal, __boltffiCancelId)")
         );
+        assert!(
+            browser
+                .contents()
+                .contains("import { BoltFFICancelledError,")
+        );
+        assert!(browser.contents().contains(
+            "export async function asyncName(value: string, options?: { signal?: AbortSignal; cancelId?: number }): Promise<string>"
+        ));
+        assert!(browser.contents().contains("_module.takePackedUtf8String("));
+        assert!(browser.contents().contains(
+            "export async function asyncValues(value: readonly number[] | Int32Array, options?: { signal?: AbortSignal; cancelId?: number }): Promise<Int32Array>"
+        ));
+        assert!(browser.contents().contains("_module.takeSlotI32Array()"));
+        assert!(browser.contents().contains(
+            "export async function asyncSize(options?: { signal?: AbortSignal; cancelId?: number }): Promise<number>"
+        ));
         assert!(
             !browser
                 .contents()
@@ -1314,13 +1374,120 @@ mod tests {
                 "AsyncPointCodec.decode(_module.readerFromWriter(__boltffiReturnWriter))"
             )
         );
-        assert!(browser.contents().contains("async get(): Promise<number>"));
+        assert!(browser.contents().contains(
+            "async get(options?: { signal?: AbortSignal; cancelId?: number }): Promise<number>"
+        ));
+        assert!(browser.contents().contains(
+            "async duplicate(options?: { signal?: AbortSignal; cancelId?: number }): Promise<Worker>"
+        ));
+        assert!(browser.contents().contains("Worker._fromHandle("));
+    }
+
+    #[test]
+    fn checks_an_aborted_signal_before_any_parameter_setup_runs() {
+        // A `String` parameter's setup allocates ownership Rust will take on
+        // the native call -- if the pre-abort check ran after that setup
+        // instead of before it, an already-aborted call would leak the
+        // allocation with no cleanup path.
+        let output = TypeScriptHost::new("demo")
+            .expect("host constructs")
+            .into_target()
+            .render(&async_bindings())
+            .expect("target renders");
+        let browser = output
+            .files()
+            .iter()
+            .find(|file| file.path().as_path().ends_with("demo.ts"))
+            .expect("browser module");
+        let source = browser.contents();
+
+        let abort_check = source
+            .find("if (__boltffiSignal?.aborted) throw new BoltFFICancelledError();")
+            .expect("pre-abort check present");
+        let param_setup = source
+            .find("_module.allocOwnedString(value)")
+            .expect("string parameter setup present");
+        assert!(
+            abort_check < param_setup,
+            "pre-abort check must run before parameter setup:\n{source}"
+        );
+    }
+
+    #[test]
+    fn appends_an_internal_options_name_when_the_callable_already_has_one() {
+        let output = TypeScriptHost::new("demo")
+            .expect("host constructs")
+            .into_target()
+            .render(&async_bindings_with_options_param())
+            .expect("target renders");
+        let browser = output
+            .files()
+            .iter()
+            .find(|file| file.path().as_path().ends_with("demo.ts"))
+            .expect("browser module");
+
+        assert!(browser.contents().contains(
+            "export async function asyncEcho(options: string, __boltffiOptions?: { signal?: AbortSignal; cancelId?: number }): Promise<string>"
+        ));
         assert!(
             browser
                 .contents()
-                .contains("async duplicate(): Promise<Worker>")
+                .contains("const __boltffiSignal = __boltffiOptions?.signal;")
         );
-        assert!(browser.contents().contains("Worker._fromHandle("));
+        assert!(
+            browser
+                .contents()
+                .contains("const __boltffiCancelId = __boltffiOptions?.cancelId;")
+        );
+    }
+
+    fn async_bindings_with_options_param() -> Bindings<Wasm32> {
+        let source = boltffi_scan::scan_file(
+            syn::parse_str(
+                r#"
+                #[export]
+                pub async fn async_echo(options: String) -> String { options }
+                "#,
+            )
+            .expect("valid source"),
+            PackageInfo::new("demo", None),
+        )
+        .expect("source scans");
+        lower::<Wasm32>(&source).expect("source lowers")
+    }
+
+    #[test]
+    fn falls_back_to_a_double_underscore_options_name_when_the_plain_fallback_also_collides() {
+        // A callable declaring both `options` and `boltffi_options` would
+        // make a plain `boltffiOptions` fallback collide too -- the
+        // generated name must stay collision-free either way.
+        let source = boltffi_scan::scan_file(
+            syn::parse_str(
+                r#"
+                #[export]
+                pub async fn async_echo(options: String, boltffi_options: String) -> String {
+                    format!("{options}{boltffi_options}")
+                }
+                "#,
+            )
+            .expect("valid source"),
+            PackageInfo::new("demo", None),
+        )
+        .expect("source scans");
+        let output = TypeScriptHost::new("demo")
+            .expect("host constructs")
+            .into_target()
+            .render(&lower::<Wasm32>(&source).expect("source lowers"))
+            .expect("target renders");
+        let browser = output
+            .files()
+            .iter()
+            .find(|file| file.path().as_path().ends_with("demo.ts"))
+            .expect("browser module");
+
+        assert!(browser.contents().contains(
+            "export async function asyncEcho(options: string, boltffiOptions: string, __boltffiOptions?: { signal?: AbortSignal; cancelId?: number }): Promise<string>"
+        ));
     }
 
     #[test]
@@ -1424,6 +1591,31 @@ mod tests {
                 .contents()
                 .contains("export function keepTimestamp(value: Timestamp): Timestamp")
         );
+    }
+
+    #[test]
+    fn renders_custom_type_defaults_through_representations() {
+        let output = TypeScriptHost::new("demo")
+            .expect("host constructs")
+            .into_target()
+            .render(&custom_type_default_bindings())
+            .expect("target renders");
+        let browser = output
+            .files()
+            .iter()
+            .find(|file| file.path().as_path().ends_with("demo.ts"))
+            .expect("browser module");
+
+        assert!(
+            browser
+                .contents()
+                .contains("readonly maxRejoinDistance?: Length;"),
+            "{}",
+            browser.contents()
+        );
+        assert!(browser.contents().contains(
+            "value.maxRejoinDistance === undefined ? { meters: 1500.0 } : value.maxRejoinDistance"
+        ));
     }
 
     /// Only an owned `Vec<u8>` crosses unframed.
