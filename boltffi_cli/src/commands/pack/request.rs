@@ -43,6 +43,8 @@ pub struct PackAndroidOptions {
     pub architectures: Vec<Architecture>,
     /// Leave the Kotlin desktop natives alone even where the config enables them.
     pub skip_desktop: bool,
+    /// Build the Kotlin desktop natives only, leaving the Android architectures alone.
+    pub desktop_only: bool,
 }
 
 pub struct PackKmpOptions {

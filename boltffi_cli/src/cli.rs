@@ -302,9 +302,16 @@ pub(crate) enum PackTargetArg {
 
         #[arg(
             long,
+            conflicts_with = "desktop_only",
             help = "Skip the Kotlin desktop natives, whatever the configuration says"
         )]
         skip_desktop: bool,
+
+        #[arg(
+            long,
+            help = "Build only the Kotlin desktop natives, leaving the Android architectures alone"
+        )]
+        desktop_only: bool,
 
         #[arg(long, help = "Enable experimental targets/features")]
         experimental: bool,
@@ -596,6 +603,7 @@ pub(crate) fn execute_command(
                     no_build,
                     architectures,
                     skip_desktop,
+                    desktop_only,
                     experimental: _,
                 } => PackCommand::Android(PackAndroidOptions {
                     execution: pack_execution_options(
@@ -607,6 +615,7 @@ pub(crate) fn execute_command(
                     ),
                     architectures: architectures.into_iter().map(Architecture::from).collect(),
                     skip_desktop,
+                    desktop_only,
                 }),
                 PackTargetArg::Kmp {
                     release,
@@ -956,6 +965,7 @@ fn release_pack_commands(
                     ),
                     architectures: Vec::new(),
                     skip_desktop: false,
+                    desktop_only: false,
                 }));
             }
         }
@@ -1013,6 +1023,7 @@ fn release_pack_commands(
                     ),
                     architectures: Vec::new(),
                     skip_desktop: false,
+                    desktop_only: false,
                 }));
             }
             if config.should_process(Target::KotlinMultiplatform, false) {

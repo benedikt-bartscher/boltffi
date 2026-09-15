@@ -61,7 +61,7 @@ pub(crate) fn pack_android(
         crate::build::resolve_build_profile(options.execution.release, &build_cargo_args);
     let android_targets = selected_android_targets(config, &options.architectures)?;
 
-    if let Some(binding_expansion) = binding_expansion.as_ref() {
+    if let Some(binding_expansion) = binding_expansion.as_ref().filter(|_| !options.desktop_only) {
         if config.android_debug_symbols_enabled() {
             ensure_debug_symbols_profile_has_debuginfo(
                 &build_cargo_args,
@@ -110,6 +110,18 @@ pub(crate) fn pack_android(
             },
         )?;
         step.finish_success();
+    }
+
+    // `--desktop-only` stops here: with no architecture built there is nothing to
+    // discover or package, and the jniLibs already on disk stay as they are.
+    if options.desktop_only {
+        package_android_kotlin_desktop_natives(
+            config,
+            &options,
+            binding_expansion.as_ref(),
+            reporter,
+        )?;
+        return Ok(());
     }
 
     let libraries = match binding_expansion.as_ref() {
