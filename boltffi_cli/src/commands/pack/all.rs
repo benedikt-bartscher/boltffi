@@ -63,6 +63,8 @@ pub(super) fn pack_all(
             config,
             PackAndroidOptions {
                 execution: options.execution.clone(),
+                architectures: Vec::new(),
+                skip_desktop: false,
             },
             reporter,
         )?;
