@@ -207,6 +207,9 @@ pub(crate) enum GenerateTargetArg {
 pub(crate) enum AndroidArchitectureArg {
     Arm64,
     Armv7,
+    // the derive would kebab-case this to `x86-64`; the configuration spells it
+    // `x86_64` under targets.android.architectures, and that has to be accepted
+    #[value(name = "x86_64", alias = "x86-64")]
     X86_64,
     X86,
 }
