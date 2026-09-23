@@ -388,6 +388,38 @@ android {
 
 The shared libraries are loaded automatically when you first call into your Kotlin bindings.
 
+### Build Directories
+
+`boltffi pack android` builds all Android ABIs at the same time, each in a Cargo process of its own with its own target directory:
+
+```
+target/boltffi/android/<triple>/cargo/<triple>/<profile>/
+```
+
+Cargo locks a target directory for the whole of a build, so builds sharing one would run one after another. `boltffi pack kmp` builds its Android libraries the same way. To cache Android builds in CI, cache `target/boltffi/android/`.
+
+If you pass `--target-dir` through to Cargo, BoltFFI keeps that directory and builds the ABIs one after another. `pack android --no-build` uses, for each ABI, whichever is newer: the library in this directory or the one in `target/<triple>/<profile>/`. The step-by-step `boltffi build android` workflow still works.
+
+Each ABI's process builds its own copy of the dependencies and build scripts. On nightly Cargo, the processes can share one build directory with [fine-grained locking](https://github.com/rust-lang/cargo/issues/4282), so shared units are only built once:
+
+```toml
+# .cargo/config.toml
+[build]
+build-dir = "{workspace-root}/target/build"
+
+[unstable]
+fine-grain-locking = true
+```
+
+To enable this for a single CI job only, set the environment variables instead:
+
+```bash
+export CARGO_BUILD_BUILD_DIR="{workspace-root}/target/build"
+export CARGO_UNSTABLE_FINE_GRAIN_LOCKING=true
+```
+
+The build directory then holds the intermediate artifacts, so cache it alongside `target/boltffi/android/`. Don't set a shared `build-dir` without fine-grained locking. Stable Cargo locks the build directory for the whole build, and the ABIs would build one after another again.
+
 ## Kotlin Multiplatform Packaging
 
 Package the experimental Kotlin Multiplatform module:
