@@ -332,6 +332,8 @@ This builds every ABI listed under `targets.android.architectures` (by default a
 
 If you enable `[targets.android.debug_symbols]`, BoltFFI also writes `{crate_artifact_name}.android.symbols.zip` under `dist/android/symbols/`. That archive mirrors the `jniLibs/<abi>/` layout and includes a `symbols.json` manifest.
 
+For release-style packaging, BoltFFI rejects this option unless the selected Cargo profile has debuginfo enabled.
+
 ### Packing a Subset
 
 To split the work across parallel CI jobs, pack one slice per job:
@@ -347,8 +349,6 @@ boltffi pack android --release --desktop-only
 - `--desktop-only` builds only the Kotlin desktop natives and leaves jniLibs as they are. It can't be combined with `--architecture` or `--skip-desktop`, and it's an error unless desktop native packaging is enabled.
 
 Slices can be packed into the same `dist/` one after another. A run only removes jniLibs for ABIs that are no longer configured, so it keeps the ABIs that other slices packaged. When a run packs only some of the configured ABIs, it writes one debug symbols archive per ABI, `{crate_artifact_name}.android.{abi}.symbols.zip`, instead of the combined archive, and leaves any existing combined archive alone. A later run that packs every configured ABI writes the combined archive and removes those per-ABI archives.
-
-For release-style packaging, BoltFFI rejects this option unless the selected Cargo profile has debuginfo enabled.
 
 ### Output Structure
 

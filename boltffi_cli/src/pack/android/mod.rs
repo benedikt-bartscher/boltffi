@@ -47,12 +47,11 @@ pub(crate) fn pack_android(
 
     reporter.section("🤖", "Packing Android");
 
+    let parts = AndroidPackParts::for_run(config, &options)?;
     ensure_android_kotlin_desktop_no_build_supported(
-        config,
         options.execution.no_build,
-        options.skip_desktop,
+        parts.desktop_natives,
     )?;
-    ensure_android_desktop_only_has_desktop_natives(config, options.desktop_only)?;
     let android_targets = selected_android_targets(config, &options.architectures)?;
 
     let build_cargo_args = resolve_build_cargo_args(config, &options.execution.cargo_args);
@@ -62,7 +61,7 @@ pub(crate) fn pack_android(
     let build_profile =
         crate::build::resolve_build_profile(options.execution.release, &build_cargo_args);
 
-    if let Some(binding_expansion) = binding_expansion.as_ref().filter(|_| !options.desktop_only) {
+    if let Some(binding_expansion) = binding_expansion.as_ref().filter(|_| parts.architectures) {
         if config.android_debug_symbols_enabled() {
             ensure_debug_symbols_profile_has_debuginfo(
                 &build_cargo_args,
@@ -113,29 +112,82 @@ pub(crate) fn pack_android(
         step.finish_success();
     }
 
-    // `--desktop-only` stops here: with no architecture built there is nothing to
-    // discover or package, and the jniLibs already on disk stay as they are.
-    if options.desktop_only {
+    if parts.architectures {
+        package_android_architectures(
+            config,
+            &options,
+            binding_expansion.as_ref(),
+            &build_profile,
+            &android_targets,
+            reporter,
+        )?;
+    }
+
+    if parts.desktop_natives {
         package_android_kotlin_desktop_natives(
             config,
             &options,
             binding_expansion.as_ref(),
             reporter,
         )?;
-        return Ok(());
     }
 
-    let libraries = match binding_expansion.as_ref() {
+    Ok(())
+}
+
+/// Which parts of `pack android` a run builds and packages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AndroidPackParts {
+    /// The selected Android architectures, packaged into jniLibs. Off for
+    /// `--desktop-only`, which leaves the jniLibs already on disk as they are.
+    architectures: bool,
+    /// The Kotlin desktop natives, where the configuration enables them and
+    /// `--skip-desktop` does not turn them off.
+    desktop_natives: bool,
+}
+
+impl AndroidPackParts {
+    /// A run that would pack neither part would build and package nothing and
+    /// still succeed, so it is refused the same way an architecture missing
+    /// from the configuration is.
+    fn for_run(config: &Config, options: &PackAndroidOptions) -> Result<Self> {
+        let parts = Self {
+            architectures: !options.desktop_only,
+            desktop_natives: should_package_android_kotlin_desktop_natives(
+                config,
+                options.skip_desktop,
+            ),
+        };
+        if !parts.architectures && !parts.desktop_natives {
+            return Err(CliError::CommandFailed {
+                command: "pack android --desktop-only needs targets.android.kotlin.desktop_pack.enabled = true with the bundled desktop_loader".to_string(),
+                status: None,
+            });
+        }
+
+        Ok(parts)
+    }
+}
+
+fn package_android_architectures(
+    config: &Config,
+    options: &PackAndroidOptions,
+    binding_expansion: Option<&BindingExpansion>,
+    build_profile: &crate::build::CargoBuildProfile,
+    android_targets: &[RustTarget],
+    reporter: &Reporter,
+) -> Result<()> {
+    let libraries = match binding_expansion {
         Some(expansion) => BuiltLibrary::discover_for_targets(
             expansion.target_directory(),
             expansion.artifact_name(),
             build_profile.output_directory_name(),
-            &android_targets,
+            android_targets,
         ),
         None => discover_built_libraries_for_targets(
             &config.crate_artifact_name(),
             build_profile.output_directory_name(),
-            &android_targets,
+            android_targets,
         )?,
     };
     let android_libraries: Vec<_> = libraries
@@ -143,7 +195,7 @@ pub(crate) fn pack_android(
         .filter(|library| library.target.platform() == Platform::Android)
         .collect();
 
-    let missing_targets = missing_built_libraries(&android_targets, &android_libraries);
+    let missing_targets = missing_built_libraries(android_targets, &android_libraries);
     if !missing_targets.is_empty() {
         return Err(PackError::MissingBuiltLibraries {
             platform: "Android".to_string(),
@@ -167,36 +219,16 @@ pub(crate) fn pack_android(
     packager.package()?;
     step.finish_success();
 
-    package_android_kotlin_desktop_natives(config, &options, binding_expansion.as_ref(), reporter)?;
-
     Ok(())
 }
 
 fn ensure_android_kotlin_desktop_no_build_supported(
-    config: &Config,
     no_build: bool,
-    skip_desktop: bool,
+    desktop_natives: bool,
 ) -> Result<()> {
-    if no_build && should_package_android_kotlin_desktop_natives(config, skip_desktop) {
+    if no_build && desktop_natives {
         return Err(CliError::CommandFailed {
             command: "pack android --no-build is unsupported while Kotlin desktop native packaging is enabled; rerun without --no-build, or pass --skip-desktop".to_string(),
-            status: None,
-        });
-    }
-
-    Ok(())
-}
-
-/// `--desktop-only` against a configuration that never packs the desktop natives
-/// would build and package nothing and still succeed, so it is refused the same
-/// way an architecture missing from the configuration is.
-fn ensure_android_desktop_only_has_desktop_natives(
-    config: &Config,
-    desktop_only: bool,
-) -> Result<()> {
-    if desktop_only && !should_package_android_kotlin_desktop_natives(config, false) {
-        return Err(CliError::CommandFailed {
-            command: "pack android --desktop-only needs targets.android.kotlin.desktop_pack.enabled = true with the bundled desktop_loader".to_string(),
             status: None,
         });
     }
@@ -261,9 +293,6 @@ fn package_android_kotlin_desktop_natives(
     binding_expansion: Option<&BindingExpansion>,
     reporter: &Reporter,
 ) -> Result<()> {
-    if !should_package_android_kotlin_desktop_natives(config, options.skip_desktop) {
-        return Ok(());
-    }
     let binding_expansion = binding_expansion.ok_or_else(|| CliError::CommandFailed {
         command: "Kotlin desktop native packaging requires a Binding IR build".to_string(),
         status: None,
@@ -352,10 +381,11 @@ pub(crate) fn build_android_targets(
 #[cfg(test)]
 mod tests {
     use super::{
-        android_kotlin_desktop_native_layout, ensure_android_desktop_only_has_desktop_natives,
-        selected_android_targets, should_package_android_kotlin_desktop_natives,
+        AndroidPackParts, android_kotlin_desktop_native_layout, selected_android_targets,
+        should_package_android_kotlin_desktop_natives,
     };
     use crate::cli::CliError;
+    use crate::commands::pack::{PackAndroidOptions, PackExecutionOptions};
     use crate::config::Config;
     use crate::target::{Architecture, RustTarget};
     use std::path::PathBuf;
@@ -518,9 +548,31 @@ architectures = ["x86_64", "arm64"]
         );
     }
 
+    fn pack_options(skip_desktop: bool, desktop_only: bool) -> PackAndroidOptions {
+        PackAndroidOptions {
+            execution: PackExecutionOptions {
+                release: false,
+                regenerate: true,
+                no_build: false,
+                deny_skipped: false,
+                cargo_args: Vec::new(),
+            },
+            architectures: Vec::new(),
+            skip_desktop,
+            desktop_only,
+        }
+    }
+
+    fn parts(architectures: bool, desktop_natives: bool) -> AndroidPackParts {
+        AndroidPackParts {
+            architectures,
+            desktop_natives,
+        }
+    }
+
     #[test]
-    fn android_desktop_only_requires_bundled_desktop_packaging() {
-        let bundled_enabled = parse_config(
+    fn android_pack_parts_follow_the_desktop_flags() {
+        let desktop_enabled = parse_config(
             r#"
 [package]
 name = "demo"
@@ -529,7 +581,41 @@ name = "demo"
 enabled = true
 "#,
         );
-        let bundled_disabled = parse_config(
+        let desktop_disabled = parse_config(
+            r#"
+[package]
+name = "demo"
+"#,
+        );
+
+        let for_run = |config: &Config, skip_desktop, desktop_only| {
+            AndroidPackParts::for_run(config, &pack_options(skip_desktop, desktop_only))
+        };
+
+        // no flag: the configuration decides, as before
+        assert_eq!(
+            for_run(&desktop_enabled, false, false).unwrap(),
+            parts(true, true)
+        );
+        assert_eq!(
+            for_run(&desktop_disabled, false, false).unwrap(),
+            parts(true, false)
+        );
+        // `--skip-desktop` keeps the architectures and drops the desktop natives
+        assert_eq!(
+            for_run(&desktop_enabled, true, false).unwrap(),
+            parts(true, false)
+        );
+        // `--desktop-only` leaves jniLibs alone and packs only the desktop natives
+        assert_eq!(
+            for_run(&desktop_enabled, false, true).unwrap(),
+            parts(false, true)
+        );
+    }
+
+    #[test]
+    fn android_pack_parts_refuse_a_run_that_packs_nothing() {
+        let desktop_disabled = parse_config(
             r#"
 [package]
 name = "demo"
@@ -547,11 +633,25 @@ desktop_loader = "system"
 enabled = true
 "#,
         );
+        let desktop_enabled = parse_config(
+            r#"
+[package]
+name = "demo"
 
-        assert!(ensure_android_desktop_only_has_desktop_natives(&bundled_enabled, true).is_ok());
-        assert!(ensure_android_desktop_only_has_desktop_natives(&bundled_disabled, true).is_err());
-        assert!(ensure_android_desktop_only_has_desktop_natives(&system_loader, true).is_err());
-        // without the flag the configuration decides on its own, as before
-        assert!(ensure_android_desktop_only_has_desktop_natives(&bundled_disabled, false).is_ok());
+[targets.android.kotlin.desktop_pack]
+enabled = true
+"#,
+        );
+
+        for config in [&desktop_disabled, &system_loader] {
+            let error = AndroidPackParts::for_run(config, &pack_options(false, true)).unwrap_err();
+            let CliError::CommandFailed { command, .. } = error else {
+                panic!("expected a command failure, got {error:?}");
+            };
+            assert!(command.starts_with("pack android --desktop-only needs"));
+        }
+        // the parser keeps the two flags apart; a caller building the options
+        // directly still cannot end up packing nothing
+        assert!(AndroidPackParts::for_run(&desktop_enabled, &pack_options(true, true)).is_err());
     }
 }
