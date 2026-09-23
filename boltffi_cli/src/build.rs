@@ -186,6 +186,14 @@ impl<'a> Builder<'a> {
         self.build_targets(targets)
     }
 
+    pub fn build_host(&self) -> Result<bool> {
+        let mut command = self.host_command()?;
+        Ok(run_command_streaming(
+            &mut command,
+            self.options.on_output.as_ref(),
+        ))
+    }
+
     pub fn build_wasm_with_triple(&self, triple: &str) -> Result<Vec<BuildResult>> {
         let command_args = self.cargo_build_command_args();
         let mut command = Command::new("cargo");
@@ -202,6 +210,23 @@ impl<'a> Builder<'a> {
             triple: triple.to_string(),
             success,
         }])
+    }
+
+    fn host_command(&self) -> Result<Command> {
+        let command_args = self.cargo_build_command_args();
+        let mut command = Command::new("cargo");
+        self.apply_cargo_build_prefix(&mut command, &command_args);
+        self.apply_common_build_args(&mut command);
+        command.args(&command_args.command_args);
+        self.apply_expansion(&mut command)?;
+        command.env_remove("IPHONEOS_DEPLOYMENT_TARGET");
+        command.envs(
+            self.options
+                .extra_env
+                .iter()
+                .map(|(key, value)| (key, value)),
+        );
+        Ok(command)
     }
 
     fn build_single_target(
@@ -474,12 +499,7 @@ name = "demo"
                 extra_env: Vec::new(),
             },
         );
-        let command_args = builder.cargo_build_command_args();
-        let mut command = Command::new("cargo");
-        builder.apply_cargo_build_prefix(&mut command, &command_args);
-        builder.apply_common_build_args(&mut command);
-        command.args(&command_args.command_args);
-        builder.apply_expansion(&mut command).unwrap();
+        let command = builder.host_command().unwrap();
         let arguments = command
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
@@ -498,6 +518,12 @@ name = "demo"
         assert_eq!(
             &arguments[arguments.len() - 4..],
             ["--lib", "--", "--cfg", "boltffi_binding_expansion"]
+        );
+        assert!(!arguments.iter().any(|argument| argument == "--target"));
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| { key == "BOLTFFI_BINDING_EXPANSION" && value.is_some() })
         );
     }
 

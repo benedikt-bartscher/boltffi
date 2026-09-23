@@ -9,9 +9,9 @@ use crate::commands::doctor::{ConfigSummary, DoctorOptions};
 use crate::commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
 use crate::commands::init::InitOptions;
 use crate::commands::pack::{
-    PackAllOptions, PackAndroidOptions, PackAppleOptions, PackCSharpOptions, PackCommand,
-    PackDartOptions, PackExecutionOptions, PackJavaOptions, PackKmpOptions, PackPythonOptions,
-    PackWasmOptions, check_java_packaging_prereqs,
+    PackAllOptions, PackAndroidOptions, PackAppleOptions, PackCOptions, PackCSharpOptions,
+    PackCommand, PackDartOptions, PackExecutionOptions, PackJavaOptions, PackKmpOptions,
+    PackPythonOptions, PackWasmOptions, check_java_packaging_prereqs,
 };
 use crate::commands::verify::VerifyOptions;
 use crate::commands::{run_build, run_check, run_doctor, run_init, run_pack, run_verify};
@@ -409,6 +409,20 @@ pub(crate) enum PackTargetArg {
         #[arg(long)]
         no_build: bool,
     },
+    #[command(
+        about = "Build + package C artifacts (experimental)",
+        long_about = "Build + package C artifacts.\n\nOutputs:\n  - Header: {targets.c.output}/include/<library>.h\n  - Host library: {targets.c.output}/lib/"
+    )]
+    C {
+        #[arg(long)]
+        release: bool,
+
+        #[arg(long)]
+        no_build: bool,
+
+        #[arg(long, help = "Enable experimental targets/features")]
+        experimental: bool,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -693,6 +707,20 @@ pub(crate) fn execute_command(
                         ),
                     })
                 }
+                PackTargetArg::C {
+                    release,
+                    no_build,
+                    experimental,
+                } => PackCommand::C(PackCOptions {
+                    execution: pack_execution_options(
+                        release,
+                        regenerate,
+                        no_build,
+                        deny_skipped,
+                        cargo_args,
+                    ),
+                    experimental,
+                }),
             };
             run_pack(&config, command, reporter)
         }
@@ -1490,21 +1518,6 @@ enabled = true
     }
 
     #[test]
-    fn cli_parses_generate_c_target() {
-        let cli = Cli::try_parse_from(["boltffi", "generate", "c", "--experimental"])
-            .expect("cli parse should succeed");
-
-        assert!(matches!(
-            cli.command,
-            Commands::Generate {
-                target: Some(GenerateTargetArg::C),
-                experimental: true,
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn cli_parses_generate_kmp_target() {
         let cli = Cli::try_parse_from(["boltffi", "generate", "kmp", "--experimental"])
             .expect("cli parse should succeed");
@@ -1525,7 +1538,7 @@ enabled = true
     #[test]
     fn cli_parses_deny_skipped_on_every_pack_target() {
         for target in [
-            "all", "apple", "android", "kmp", "wasm", "python", "csharp", "java", "dart",
+            "all", "apple", "android", "kmp", "wasm", "python", "csharp", "java", "dart", "c",
         ] {
             let default = Cli::try_parse_from(["boltffi", "pack", target])
                 .unwrap_or_else(|error| panic!("pack {target} should parse: {error}"));
@@ -1561,6 +1574,38 @@ enabled = true
     }
 
     #[test]
+    fn cli_parses_pack_c_target() {
+        let cli = Cli::try_parse_from(["boltffi", "pack", "c", "--experimental", "--release"])
+            .expect("cli parse should succeed");
+        assert!(matches!(
+            cli.command,
+            Commands::Pack {
+                target: PackTargetArg::C {
+                    experimental: true,
+                    release: true,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cli_parses_generate_c_target() {
+        let cli = Cli::try_parse_from(["boltffi", "generate", "c", "--experimental"])
+            .expect("cli parse should succeed");
+
+        assert!(matches!(
+            cli.command,
+            Commands::Generate {
+                target: Some(GenerateTargetArg::C),
+                experimental: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn cli_parses_pack_python_target() {
         let cli =
             Cli::try_parse_from(["boltffi", "pack", "python"]).expect("cli parse should succeed");
@@ -1593,7 +1638,7 @@ enabled = true
     #[test]
     fn cli_parses_regeneration_selection_for_every_pack_target() {
         [
-            "all", "apple", "android", "kmp", "wasm", "java", "python", "dart", "csharp",
+            "all", "apple", "android", "kmp", "wasm", "java", "python", "dart", "csharp", "c",
         ]
         .into_iter()
         .for_each(|target| {

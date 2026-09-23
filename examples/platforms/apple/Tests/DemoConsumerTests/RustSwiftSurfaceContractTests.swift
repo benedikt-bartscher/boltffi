@@ -554,7 +554,8 @@ private let typeMemberCoverageGaps: Set<String> = [
 
 private let featureScopedRustFiles: Set<String> = [
     "callbacks/csharp_closures.rs",
-    "classes/async_factory.rs"
+    "classes/async_factory.rs",
+    "records/mutable.rs"
 ]
 
 private func typeMemberCoverageKey(_ rustTypeMember: RustTypeMember) -> String {
