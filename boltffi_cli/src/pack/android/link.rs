@@ -121,14 +121,19 @@ impl<'a> AndroidPackager<'a> {
         jnilibs_path: &Path,
         android_libs: &[&BuiltLibrary],
     ) -> Result<()> {
-        let packaged_triples: std::collections::HashSet<_> = android_libs
+        // Only an ABI the configuration no longer carries is stale. A configured ABI
+        // this run did not package belongs to another `--architecture` slice packed
+        // into the same output, and deleting it would undo that run's work.
+        let kept_triples: std::collections::HashSet<_> = android_libs
             .iter()
-            .map(|library| library.target.triple())
+            .map(|library| library.target)
+            .chain(self.config.android_targets())
+            .map(|target| target.triple())
             .collect();
         let lib_file_name = format!("lib{}.so", self.android_library_name());
 
         for target in RustTarget::ALL_ANDROID {
-            if packaged_triples.contains(target.triple()) {
+            if kept_triples.contains(target.triple()) {
                 continue;
             }
 
@@ -281,9 +286,105 @@ fn android_jni_compile_args(
     args
 }
 
+/// The debug symbol archive name for one ABI, or for the combined archive
+/// covering every configured ABI when `abi` is `None`.
+fn android_debug_symbols_archive_name(config: &Config, abi: Option<&str>) -> String {
+    let crate_artifact_name = config.crate_artifact_name();
+    match config.android_debug_symbols_format() {
+        crate::config::DebugSymbolsFormat::Zip => match abi {
+            Some(abi) => format!("{crate_artifact_name}.android.{abi}.symbols.zip"),
+            None => format!("{crate_artifact_name}.android.symbols.zip"),
+        },
+    }
+}
+
+/// Groups this run's linked libraries into the debug symbol archives to write.
+///
+/// A run covering every configured ABI writes the one combined archive. A run
+/// packing only some of them (`--architecture`) writes one archive per ABI
+/// instead, so parallel slices neither overwrite each other's archive nor
+/// leave one behind that claims to cover ABIs it does not carry.
+fn android_debug_symbol_archives<'a>(
+    config: &Config,
+    linked_outputs: &'a [AndroidLinkedOutput],
+) -> Vec<(String, Vec<&'a AndroidLinkedOutput>)> {
+    let linked_triples: std::collections::BTreeSet<_> = linked_outputs
+        .iter()
+        .map(|output| output.target.triple())
+        .collect();
+    let configured_triples: std::collections::BTreeSet<_> = config
+        .android_targets()
+        .iter()
+        .map(RustTarget::triple)
+        .collect();
+
+    if linked_triples == configured_triples {
+        return vec![(
+            android_debug_symbols_archive_name(config, None),
+            linked_outputs.iter().collect(),
+        )];
+    }
+
+    linked_outputs
+        .iter()
+        .map(|output| {
+            (
+                android_debug_symbols_archive_name(config, Some(output.abi)),
+                vec![output],
+            )
+        })
+        .collect()
+}
+
 fn write_android_debug_symbols(
     config: &Config,
     linked_outputs: &[AndroidLinkedOutput],
+) -> Result<Vec<PathBuf>> {
+    let archives = android_debug_symbol_archives(config, linked_outputs);
+    let combined_archive_name = android_debug_symbols_archive_name(config, None);
+    if archives
+        .iter()
+        .any(|(archive_name, _)| *archive_name == combined_archive_name)
+    {
+        remove_stale_per_abi_debug_symbols(config)?;
+    }
+
+    archives
+        .into_iter()
+        .map(|(archive_name, outputs)| {
+            write_android_debug_symbols_archive(config, &archive_name, &outputs)
+        })
+        .collect()
+}
+
+/// A run writing the combined archive supersedes any per-ABI archives an
+/// earlier `--architecture` run left in the same output, which would otherwise
+/// describe libraries that are no longer the ones in jniLibs.
+fn remove_stale_per_abi_debug_symbols(config: &Config) -> Result<()> {
+    let output_dir = config.android_debug_symbols_output();
+    for target in RustTarget::ALL_ANDROID {
+        let stale_archive = output_dir.join(android_debug_symbols_archive_name(
+            config,
+            Some(target.architecture().android_abi()),
+        ));
+        if stale_archive.exists() {
+            std::fs::remove_file(&stale_archive).map_err(|source| CliError::CommandFailed {
+                command: format!(
+                    "remove stale android debug symbols {}",
+                    stale_archive.display()
+                ),
+                status: source.raw_os_error(),
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_android_debug_symbols_archive(
+    config: &Config,
+    archive_name: &str,
+    linked_outputs: &[&AndroidLinkedOutput],
 ) -> Result<PathBuf> {
     let artifacts = linked_outputs
         .iter()
@@ -306,11 +407,7 @@ fn write_android_debug_symbols(
 
     write_debug_symbols_zip(
         &config.android_debug_symbols_output(),
-        &match config.android_debug_symbols_format() {
-            crate::config::DebugSymbolsFormat::Zip => {
-                format!("{}.android.symbols.zip", config.crate_artifact_name())
-            }
-        },
+        archive_name,
         "android",
         match config.android_debug_symbols_bundle() {
             crate::config::DebugSymbolsBundle::Unstripped => "unstripped",
@@ -389,8 +486,8 @@ fn run_command(mut command: Command) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AndroidPackageLayout, AndroidPackager, android_export_version_script,
-        android_jni_compile_args, android_shared_link_args,
+        AndroidLinkedOutput, AndroidPackageLayout, AndroidPackager, android_export_version_script,
+        android_jni_compile_args, android_shared_link_args, write_android_debug_symbols,
     };
     use crate::config::Config;
     use crate::pack::android::AndroidBindingMode;
@@ -430,6 +527,9 @@ mod tests {
 [package]
 name = "demo"
 
+[targets.android]
+architectures = ["arm64"]
+
 [targets.android.pack]
 output = "{}"
 "#,
@@ -461,6 +561,182 @@ output = "{}"
 
         assert!(!stale_boltffi.exists());
         assert!(unrelated.exists());
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    fn unique_temp_root(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("boltffi-android-{label}-{unique}"))
+    }
+
+    fn write_abi_library(pack_output: &Path, abi: &str) -> PathBuf {
+        let abi_dir = pack_output.join(abi);
+        fs::create_dir_all(&abi_dir).expect("create abi dir");
+        let library = abi_dir.join("libdemo.so");
+        fs::write(&library, abi).expect("write abi library");
+        library
+    }
+
+    /// Two `--architecture` slices packed one after the other into the same
+    /// output must both survive: the second run sweeps only ABIs the
+    /// configuration dropped, not the configured one the first run packaged.
+    #[test]
+    fn stale_cleanup_keeps_configured_abis_packaged_by_another_run() {
+        let root = unique_temp_root("slice-sweep");
+        let pack_output = root.join("jniLibs");
+        let config = parse_config(&format!(
+            r#"
+[package]
+name = "demo"
+
+[targets.android]
+architectures = ["arm64", "x86_64"]
+
+[targets.android.pack]
+output = "{}"
+"#,
+            pack_output.display()
+        ));
+
+        let arm64_from_earlier_run = write_abi_library(&pack_output, "arm64-v8a");
+        let x86_64_from_this_run = write_abi_library(&pack_output, "x86_64");
+        let dropped_from_config = write_abi_library(&pack_output, "armeabi-v7a");
+
+        let packager = AndroidPackager::new(
+            &config,
+            vec![BuiltLibrary {
+                target: RustTarget::ANDROID_X86_64,
+                path: root.join("libdemo.a"),
+            }],
+            false,
+        );
+        let android_libs = packager.filter_android_libraries();
+        packager
+            .remove_stale_packaged_libraries(&pack_output, &android_libs)
+            .expect("cleanup succeeds");
+
+        assert!(arm64_from_earlier_run.exists());
+        assert!(x86_64_from_this_run.exists());
+        assert!(!dropped_from_config.exists());
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    fn debug_symbols_config(symbols_output: &Path) -> Config {
+        parse_config(&format!(
+            r#"
+[package]
+name = "demo"
+
+[targets.android]
+architectures = ["arm64", "x86_64"]
+
+[targets.android.debug_symbols]
+enabled = true
+output = "{}"
+"#,
+            symbols_output.display()
+        ))
+    }
+
+    fn linked_output(root: &Path, target: RustTarget) -> AndroidLinkedOutput {
+        let abi = target.architecture().android_abi();
+        AndroidLinkedOutput {
+            target,
+            abi,
+            path: write_abi_library(&root.join("linked"), abi),
+        }
+    }
+
+    fn archive_entries(archive: &Path) -> Vec<String> {
+        let file = fs::File::open(archive).expect("open symbols archive");
+        let mut archive = zip::ZipArchive::new(file).expect("read symbols archive");
+        let mut names = (0..archive.len())
+            .map(|index| {
+                archive
+                    .by_index(index)
+                    .expect("archive entry")
+                    .name()
+                    .to_string()
+            })
+            .filter(|name| name.ends_with(".so"))
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn android_debug_symbols_write_one_archive_when_every_configured_abi_is_packaged() {
+        let root = unique_temp_root("symbols-full");
+        let symbols_output = root.join("symbols");
+        let config = debug_symbols_config(&symbols_output);
+        let stale_slice_archive = symbols_output.join("demo.android.arm64-v8a.symbols.zip");
+        fs::create_dir_all(&symbols_output).expect("create symbols dir");
+        fs::write(&stale_slice_archive, []).expect("write stale slice archive");
+
+        let outputs = [
+            linked_output(&root, RustTarget::ANDROID_ARM64),
+            linked_output(&root, RustTarget::ANDROID_X86_64),
+        ];
+        let archives = write_android_debug_symbols(&config, &outputs).expect("write symbols");
+
+        assert_eq!(
+            archives,
+            vec![symbols_output.join("demo.android.symbols.zip")]
+        );
+        assert_eq!(
+            archive_entries(&archives[0]),
+            vec![
+                "demo.android.symbols/jniLibs/arm64-v8a/libdemo.so",
+                "demo.android.symbols/jniLibs/x86_64/libdemo.so",
+            ]
+        );
+        assert!(!stale_slice_archive.exists());
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// Slices packed into the same output write one archive per ABI, so the
+    /// second slice leaves the first slice's symbols in place.
+    #[test]
+    fn android_debug_symbols_write_one_archive_per_abi_for_a_partial_selection() {
+        let root = unique_temp_root("symbols-slices");
+        let symbols_output = root.join("symbols");
+        let config = debug_symbols_config(&symbols_output);
+
+        let arm64 = write_android_debug_symbols(
+            &config,
+            &[linked_output(&root, RustTarget::ANDROID_ARM64)],
+        )
+        .expect("write arm64 symbols");
+        let x86_64 = write_android_debug_symbols(
+            &config,
+            &[linked_output(&root, RustTarget::ANDROID_X86_64)],
+        )
+        .expect("write x86_64 symbols");
+
+        assert_eq!(
+            arm64,
+            vec![symbols_output.join("demo.android.arm64-v8a.symbols.zip")]
+        );
+        assert_eq!(
+            x86_64,
+            vec![symbols_output.join("demo.android.x86_64.symbols.zip")]
+        );
+        assert!(arm64[0].exists());
+        assert_eq!(
+            archive_entries(&arm64[0]),
+            vec!["demo.android.arm64-v8a.symbols/jniLibs/arm64-v8a/libdemo.so"]
+        );
+        assert_eq!(
+            archive_entries(&x86_64[0]),
+            vec!["demo.android.x86_64.symbols/jniLibs/x86_64/libdemo.so"]
+        );
+        assert!(!symbols_output.join("demo.android.symbols.zip").exists());
 
         fs::remove_dir_all(&root).expect("cleanup temp dir");
     }

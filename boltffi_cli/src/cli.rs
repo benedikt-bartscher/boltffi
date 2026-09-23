@@ -312,6 +312,7 @@ pub(crate) enum PackTargetArg {
 
         #[arg(
             long,
+            conflicts_with = "architectures",
             help = "Build only the Kotlin desktop natives, leaving the Android architectures alone"
         )]
         desktop_only: bool,
@@ -1154,7 +1155,7 @@ mod tests {
     };
     use crate::commands::doctor::ConfigSummary;
     use crate::commands::pack::PackCommand;
-    use crate::target::RustTarget;
+    use crate::target::{Architecture, RustTarget};
     use crate::{cli::CliError, config::Config};
     use clap::Parser;
     use std::path::PathBuf;
@@ -1588,6 +1589,69 @@ enabled = true
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn cli_parses_pack_android_architecture_selection() {
+        let cli = Cli::try_parse_from([
+            "boltffi",
+            "pack",
+            "android",
+            "--architecture",
+            "arm64",
+            "--architecture",
+            "x86_64",
+            "--architecture",
+            "x86-64",
+            "--skip-desktop",
+        ])
+        .expect("cli parse should succeed");
+
+        let Commands::Pack {
+            target:
+                PackTargetArg::Android {
+                    architectures,
+                    skip_desktop,
+                    desktop_only,
+                    ..
+                },
+            ..
+        } = cli.command
+        else {
+            panic!("expected pack android");
+        };
+        assert_eq!(
+            architectures
+                .into_iter()
+                .map(Architecture::from)
+                .collect::<Vec<_>>(),
+            vec![
+                Architecture::Arm64,
+                Architecture::X86_64,
+                Architecture::X86_64
+            ]
+        );
+        assert!(skip_desktop);
+        assert!(!desktop_only);
+    }
+
+    #[test]
+    fn cli_rejects_desktop_only_combined_with_an_android_slice() {
+        for conflicting in ["--skip-desktop", "--architecture=arm64"] {
+            let error =
+                Cli::try_parse_from(["boltffi", "pack", "android", "--desktop-only", conflicting])
+                    .err()
+                    .unwrap_or_else(|| panic!("--desktop-only {conflicting} should be rejected"));
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn cli_rejects_non_android_architecture() {
+        assert!(
+            Cli::try_parse_from(["boltffi", "pack", "android", "--architecture", "wasm32"])
+                .is_err()
+        );
     }
 
     #[test]

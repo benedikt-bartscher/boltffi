@@ -52,6 +52,8 @@ pub(crate) fn pack_android(
         options.execution.no_build,
         options.skip_desktop,
     )?;
+    ensure_android_desktop_only_has_desktop_natives(config, options.desktop_only)?;
+    let android_targets = selected_android_targets(config, &options.architectures)?;
 
     let build_cargo_args = resolve_build_cargo_args(config, &options.execution.cargo_args);
     let binding_expansion = (!options.execution.no_build)
@@ -59,7 +61,6 @@ pub(crate) fn pack_android(
         .transpose()?;
     let build_profile =
         crate::build::resolve_build_profile(options.execution.release, &build_cargo_args);
-    let android_targets = selected_android_targets(config, &options.architectures)?;
 
     if let Some(binding_expansion) = binding_expansion.as_ref().filter(|_| !options.desktop_only) {
         if config.android_debug_symbols_enabled() {
@@ -186,6 +187,23 @@ fn ensure_android_kotlin_desktop_no_build_supported(
     Ok(())
 }
 
+/// `--desktop-only` against a configuration that never packs the desktop natives
+/// would build and package nothing and still succeed, so it is refused the same
+/// way an architecture missing from the configuration is.
+fn ensure_android_desktop_only_has_desktop_natives(
+    config: &Config,
+    desktop_only: bool,
+) -> Result<()> {
+    if desktop_only && !should_package_android_kotlin_desktop_natives(config, false) {
+        return Err(CliError::CommandFailed {
+            command: "pack android --desktop-only needs targets.android.kotlin.desktop_pack.enabled = true with the bundled desktop_loader".to_string(),
+            status: None,
+        });
+    }
+
+    Ok(())
+}
+
 /// The configured Android targets, narrowed to `architectures` when it asks for
 /// some. An architecture the configuration does not carry is an error rather
 /// than an empty build, so a typo cannot quietly produce a partial package.
@@ -205,7 +223,7 @@ fn selected_android_targets(
                 .iter()
                 .any(|target| target.architecture() == **architecture)
         })
-        .map(|architecture| format!("{architecture:?}").to_lowercase())
+        .map(|architecture| architecture.canonical_name())
         .collect();
     if !unknown.is_empty() {
         return Err(CliError::CommandFailed {
@@ -329,9 +347,12 @@ pub(crate) fn build_android_targets(
 #[cfg(test)]
 mod tests {
     use super::{
-        android_kotlin_desktop_native_layout, should_package_android_kotlin_desktop_natives,
+        android_kotlin_desktop_native_layout, ensure_android_desktop_only_has_desktop_natives,
+        selected_android_targets, should_package_android_kotlin_desktop_natives,
     };
+    use crate::cli::CliError;
     use crate::config::Config;
+    use crate::target::{Architecture, RustTarget};
     use std::path::PathBuf;
 
     fn parse_config(input: &str) -> Config {
@@ -420,5 +441,107 @@ enabled = true
             &bundled_enabled,
             true
         ));
+    }
+
+    fn arm64_and_x86_64_config() -> Config {
+        parse_config(
+            r#"
+[package]
+name = "demo"
+
+[targets.android]
+architectures = ["x86_64", "arm64"]
+"#,
+        )
+    }
+
+    #[test]
+    fn android_target_selection_defaults_to_every_configured_architecture() {
+        let config = arm64_and_x86_64_config();
+
+        assert_eq!(
+            selected_android_targets(&config, &[]).unwrap(),
+            config.android_targets()
+        );
+    }
+
+    #[test]
+    fn android_target_selection_keeps_configured_order_and_drops_duplicates() {
+        let config = arm64_and_x86_64_config();
+
+        let selected = selected_android_targets(
+            &config,
+            &[
+                Architecture::Arm64,
+                Architecture::X86_64,
+                Architecture::Arm64,
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            vec![RustTarget::ANDROID_X86_64, RustTarget::ANDROID_ARM64]
+        );
+        assert_eq!(
+            selected_android_targets(&config, &[Architecture::Arm64]).unwrap(),
+            vec![RustTarget::ANDROID_ARM64]
+        );
+    }
+
+    #[test]
+    fn android_target_selection_rejects_unconfigured_architectures() {
+        let config = arm64_and_x86_64_config();
+
+        let error = selected_android_targets(
+            &config,
+            &[Architecture::Arm64, Architecture::Armv7, Architecture::X86],
+        )
+        .unwrap_err();
+
+        let CliError::CommandFailed { command, .. } = error else {
+            panic!("expected a command failure, got {error:?}");
+        };
+        assert_eq!(
+            command,
+            "architecture(s) armv7, x86 are not configured under targets.android.architectures"
+        );
+    }
+
+    #[test]
+    fn android_desktop_only_requires_bundled_desktop_packaging() {
+        let bundled_enabled = parse_config(
+            r#"
+[package]
+name = "demo"
+
+[targets.android.kotlin.desktop_pack]
+enabled = true
+"#,
+        );
+        let bundled_disabled = parse_config(
+            r#"
+[package]
+name = "demo"
+"#,
+        );
+        let system_loader = parse_config(
+            r#"
+[package]
+name = "demo"
+
+[targets.android.kotlin]
+desktop_loader = "system"
+
+[targets.android.kotlin.desktop_pack]
+enabled = true
+"#,
+        );
+
+        assert!(ensure_android_desktop_only_has_desktop_natives(&bundled_enabled, true).is_ok());
+        assert!(ensure_android_desktop_only_has_desktop_natives(&bundled_disabled, true).is_err());
+        assert!(ensure_android_desktop_only_has_desktop_natives(&system_loader, true).is_err());
+        // without the flag the configuration decides on its own, as before
+        assert!(ensure_android_desktop_only_has_desktop_natives(&bundled_disabled, false).is_ok());
     }
 }
