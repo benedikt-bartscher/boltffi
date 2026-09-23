@@ -1,9 +1,9 @@
 {%- if enumeration.c_style() %}
 {%- if let Some(value_type) = enumeration.value_type() %}
 {%- if enumeration.error() %}
-{{ enumeration.documentation() }}sealed class {{ enumeration.name() }}(val value: {{ value_type }}) : Exception() {
+{{ enumeration.documentation() }}sealed class {{ enumeration.name() }}(val value: {{ value_type }}){{ enumeration.c_style_supertypes() }} {
 {%- else %}
-{{ enumeration.documentation() }}enum class {{ enumeration.name() }}(val value: {{ value_type }}) {
+{{ enumeration.documentation() }}enum class {{ enumeration.name() }}(val value: {{ value_type }}){{ enumeration.c_style_supertypes() }} {
 {%- endif %}
 {%- for variant in enumeration.c_style_variants() %}
 {%- if enumeration.error() %}

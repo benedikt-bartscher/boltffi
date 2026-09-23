@@ -74,7 +74,7 @@ impl<'package> Writer<'package> {
         Self::call(Identifier::parse(format!("_boltffi_wire_{stem}"))?, [value])
     }
 
-    fn write_enum(&self, value: Expression, enumeration: EnumId) -> Result<Expression> {
+    pub fn write_enum(&self, value: Expression, enumeration: EnumId) -> Result<Expression> {
         match self.package.enum_codec(enumeration)? {
             EnumCodec::CStyle(primitive) => {
                 let stem = primitive::Runtime::new(primitive).wire_stem()?;

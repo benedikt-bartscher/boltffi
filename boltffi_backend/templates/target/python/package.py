@@ -504,7 +504,7 @@ class {{ enumeration.class_name }}:
 {%- for variant in wire.variants %}
         if tag == {{ variant.tag }}:
 {%- if let Some(payload) = variant.transparent_payload %}
-            return {{ payload }}._boltffi_from_reader(reader)
+            return {{ payload.decode }}
 {%- else %}
             return {{ variant.class_name }}._boltffi_from_reader_payload(reader)
 {%- endif %}
@@ -516,8 +516,8 @@ class {{ enumeration.class_name }}:
     def _boltffi_wire_value(cls, value) -> bytes:
 {%- for variant in wire.variants %}
 {%- if let Some(payload) = variant.transparent_payload %}
-        if isinstance(value, {{ payload }}):
-            return _boltffi_wire_u32({{ variant.tag }}) + value._boltffi_wire()
+        if isinstance(value, {{ payload.class_name }}):
+            return _boltffi_wire_u32({{ variant.tag }}) + {{ payload.encode }}
 {%- endif %}
 {%- endfor %}
         if isinstance(value, cls):
@@ -591,7 +591,7 @@ class {{ variant.class_name }}({{ enumeration.class_name }}):
 
 {% endfor %}
 {%- else %}
-class {{ enumeration.class_name }}(IntEnum):
+class {{ enumeration.class_name }}({% for base in enumeration.bases %}{{ base }}, {% endfor %}IntEnum):
 {{- enumeration.documentation.docstring("    ") }}
 {%- for variant in enumeration.variants %}
     {{ variant.name }} = {{ variant.value }}

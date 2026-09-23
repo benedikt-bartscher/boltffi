@@ -914,11 +914,11 @@ desc = describe_state(state)`}
 
 ### Transparent variants
 
-A variant whose payload is exactly one record can be marked
+A variant whose payload is exactly one record or C-style enum can be marked
 `#[boltffi::transparent]`. The bindings then drop the wrapper class for that
-variant: the payload record itself becomes the variant, so reading the enum
+variant: the payload type itself becomes the variant, so reading the enum
 means one less allocation and one less field hop, and a type check against
-the payload record smart-casts directly.
+the payload type smart-casts directly.
 
 ```rust
 #[data]
@@ -971,14 +971,47 @@ A record may be a transparent payload of several enums at once — it
 implements each enum's interface, and the codec recovers the right variant
 tag from which enum it is written through.
 
+A C-style enum payload works the same way: the enum class takes the data
+enum as a supertype, so an entry is the variant.
+
+```rust
+#[data]
+#[repr(i32)]
+pub enum Mode {
+    Fast = 0,
+    Slow = 1,
+}
+
+#[data]
+pub enum Setting {
+    Unset,
+    #[boltffi::transparent]
+    Mode(Mode),
+}
+```
+
+```kotlin
+enum class Mode(val value: Int) : Setting {
+    FAST(0),
+    SLOW(1);
+    // ...
+}
+
+val setting: Setting = Mode.FAST
+```
+
+In Python the `IntEnum` inherits the enum class (`class Mode(Setting,
+IntEnum)`), so `Mode.FAST` is a `Setting`, keeps its `int` semantics, and
+decodes back to the same member.
+
 Constraints, checked at generate time:
 
-- The payload must be exactly one record. Unit variants, scalar payloads,
-  and multi-field payloads keep their wrapper classes (mixing transparent
-  and wrapped variants in one enum is fine).
-- No two transparent variants of one enum may carry the same payload
-  record: encode recovers the tag from the payload's concrete type, which a
-  shared record would make ambiguous. Note the flip side: adding a second
+- The payload must be exactly one record or C-style enum. Unit variants,
+  scalar and data-enum payloads, and multi-field payloads keep their wrapper
+  classes (mixing transparent and wrapped variants in one enum is fine).
+- No two transparent variants of one enum may carry the same payload type:
+  encode recovers the tag from the payload's concrete type, which a shared
+  type would make ambiguous. Note the flip side: adding a second
   field of an existing payload type to an enum is representable only by
   leaving the new variant wrapped.
 - Error enums (`#[error]`) cannot have transparent variants — the sealed

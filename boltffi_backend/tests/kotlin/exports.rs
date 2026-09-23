@@ -155,6 +155,14 @@ fn kotlin_target_renders_transparent_enums_as_sealed_interfaces() {
     insta::assert_snapshot!(rendered_fixture("enums/transparent"));
 }
 
+/// A C-style enum payload is its own variant as well: the enum class takes
+/// the sealed interfaces as supertypes and the companion encodes it through
+/// the C-style enum codec.
+#[test]
+fn kotlin_target_renders_transparent_c_style_enum_payloads() {
+    insta::assert_snapshot!(rendered_fixture("enums/transparent_c_style"));
+}
+
 /// A pruned transparent enum leaves no sealed interface behind, so the payload
 /// record must drop the conformance rather than name a supertype the file
 /// never declares. Both pruning routes are covered: the capability gate

@@ -123,7 +123,7 @@ fn lower_data<S: SurfaceLower>(
         .enumerate()
         .map(|(variant_index, variant)| lower_variant(index, ids, variant_index, variant))
         .collect::<Result<Vec<_>, LowerError>>()?;
-    validate_transparent_variants(enumeration, &variants)?;
+    validate_transparent_variants(index, enumeration, &variants)?;
     Ok(DataEnumDecl::new(
         ids.enumeration(&enumeration.id)?,
         CanonicalName::from(&enumeration.name),
@@ -161,44 +161,65 @@ fn lower_variant(
 /// Rejects `#[boltffi::transparent]` on any variant shape the attribute
 /// cannot take.
 ///
-/// A transparent variant renders as its payload record, so the payload must
-/// be exactly one record-typed field, and no other transparent variant of
-/// the same enum may carry the same record: the backends recover the variant
-/// tag from the payload's concrete type on encode, which two variants
-/// sharing one payload record would make ambiguous.
+/// A transparent variant renders as its payload type, so the payload must be
+/// exactly one field typed as a record or a C-style enum — a type the
+/// backends can give the enum as a supertype — and no other transparent
+/// variant of the same enum may carry the same type: the backends recover
+/// the variant tag from the payload's concrete type on encode, which two
+/// variants sharing one payload type would make ambiguous.
 fn validate_transparent_variants(
+    index: &Index,
     enumeration: &SourceEnum,
     variants: &[DataVariantDecl],
 ) -> Result<(), LowerError> {
     let mut seen = std::collections::BTreeSet::new();
-    for variant in variants.iter().filter(|variant| variant.transparent()) {
-        let payload = match variant.payload().fields() {
-            [field] => field,
-            _ => {
-                return Err(LowerError::invalid_transparent_variant(
-                    enumeration.name.spelling(),
-                    variant.name().as_path_string(),
-                    "must carry exactly one payload field",
-                ));
+    for (source, variant) in enumeration
+        .variants
+        .iter()
+        .zip(variants)
+        .filter(|(_, variant)| variant.transparent())
+    {
+        let invalid = |reason| {
+            LowerError::invalid_transparent_variant(
+                enumeration.name.spelling(),
+                variant.name().as_path_string(),
+                reason,
+            )
+        };
+        let [field] = variant.payload().fields() else {
+            return Err(invalid("must carry exactly one payload field"));
+        };
+        let payload = match field.ty() {
+            crate::TypeRef::Record(record) => crate::TransparentPayload::Record(*record),
+            crate::TypeRef::Enum(id) if carries_c_style_enum(index, source) => {
+                crate::TransparentPayload::Enum(*id)
             }
+            _ => return Err(invalid("must carry a record or C-style enum payload")),
         };
-        let crate::TypeRef::Record(record) = payload.ty() else {
-            return Err(LowerError::invalid_transparent_variant(
-                enumeration.name.spelling(),
-                variant.name().as_path_string(),
-                "must carry a record payload",
-            ));
-        };
-        if !seen.insert(*record) {
-            return Err(LowerError::invalid_transparent_variant(
-                enumeration.name.spelling(),
-                variant.name().as_path_string(),
-                "carries a payload record another transparent variant of the \
+        if !seen.insert(payload) {
+            return Err(invalid(
+                "carries a payload type another transparent variant of the \
                  same enum already carries",
             ));
         }
     }
     Ok(())
+}
+
+/// Whether the source variant's single payload field names a C-style enum.
+fn carries_c_style_enum(index: &Index, variant: &SourceVariant) -> bool {
+    let ty = match &variant.payload {
+        SourcePayload::Tuple(fields) => match fields.as_slice() {
+            [ty] => ty,
+            _ => return false,
+        },
+        SourcePayload::Struct(fields) => match fields.as_slice() {
+            [field] => &field.type_expr,
+            _ => return false,
+        },
+        SourcePayload::Unit => return false,
+    };
+    matches!(ty, TypeExpr::Enum { id, .. } if index.enumeration(id).is_some_and(is_c_style))
 }
 
 fn lower_payload(
@@ -1573,6 +1594,93 @@ mod tests {
             )],
         )
         .expect_err("two transparent variants sharing one payload record make encode ambiguous");
+
+        assert!(matches!(
+            error.kind(),
+            LowerErrorKind::InvalidTransparentVariant { .. }
+        ));
+    }
+
+    fn mode_enum() -> EnumDef {
+        enumeration(
+            "demo::Mode",
+            "Mode",
+            vec![unit_variant("fast"), unit_variant("slow")],
+        )
+    }
+
+    #[test]
+    fn transparent_variant_lowers_with_its_c_style_enum_payload() {
+        let bindings = lower_enums::<Native>(vec![
+            enumeration(
+                "demo::Setting",
+                "Setting",
+                vec![
+                    unit_variant("unset"),
+                    transparent_variant(
+                        "mode",
+                        VariantPayload::Tuple(vec![enum_type("demo::Mode", "Mode")]),
+                    ),
+                ],
+            ),
+            mode_enum(),
+        ]);
+        let enumeration = data_enum(&bindings);
+
+        assert!(matches!(
+            enumeration.variants()[1].transparent_payload(),
+            Some(crate::TransparentPayload::Enum(_))
+        ));
+    }
+
+    #[test]
+    fn transparent_variant_rejects_data_enum_payloads() {
+        let error = lower_enums_result::<Native>(vec![
+            enumeration(
+                "demo::Setting",
+                "Setting",
+                vec![transparent_variant(
+                    "inner",
+                    VariantPayload::Tuple(vec![enum_type("demo::Inner", "Inner")]),
+                )],
+            ),
+            enumeration(
+                "demo::Inner",
+                "Inner",
+                vec![variant(
+                    "count",
+                    VariantPayload::Tuple(vec![TypeExpr::Primitive(Primitive::U32)]),
+                )],
+            ),
+        ])
+        .expect_err("a data enum cannot take another data enum as a supertype");
+
+        assert!(matches!(
+            error.kind(),
+            LowerErrorKind::InvalidTransparentVariant { .. }
+        ));
+    }
+
+    #[test]
+    fn transparent_variants_reject_a_shared_c_style_enum_payload() {
+        let error = lower_enums_result::<Native>(vec![
+            enumeration(
+                "demo::Setting",
+                "Setting",
+                vec![
+                    transparent_variant(
+                        "first",
+                        VariantPayload::Tuple(vec![enum_type("demo::Mode", "Mode")]),
+                    ),
+                    transparent_variant(
+                        "second",
+                        VariantPayload::Tuple(vec![enum_type("demo::Mode", "Mode")]),
+                    ),
+                ],
+            ),
+            mode_enum(),
+        ])
+        .expect_err("two transparent variants sharing one payload enum make encode ambiguous");
 
         assert!(matches!(
             error.kind(),

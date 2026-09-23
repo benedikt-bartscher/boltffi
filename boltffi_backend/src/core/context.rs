@@ -4,7 +4,7 @@ use boltffi_binding::{
     Bindings, CallbackDecl, CallbackId, CanonicalName, ClassDecl, ClassId, ConstantDecl,
     ConstantId, ConstantOwner, CustomTypeDecl, CustomTypeId, DeclarationId, DeclarationRef,
     EnumDecl, EnumId, FunctionDecl, FunctionId, RecordDecl, RecordId, StreamDecl, StreamId,
-    Surface,
+    Surface, TransparentPayload,
 };
 
 use crate::core::capabilities::BindingCapabilityAnalysis;
@@ -140,17 +140,17 @@ impl<'bindings, S: Surface> RenderContext<'bindings, S> {
     }
 
     /// Returns the names of the data enums this render emits whose
-    /// transparent variants carry the record as their payload, in contract
+    /// transparent variants carry the type as their payload, in contract
     /// order.
     ///
-    /// Every backend that gives a payload record a supertype reads the list
-    /// from here, so the record's declaration and the enum's own cannot
+    /// Every backend that gives a payload type a supertype reads the list
+    /// from here, so the payload's declaration and the enum's own cannot
     /// disagree about which conformances exist. Enums the render prunes are
-    /// left out: their type never reaches the generated source, so a record
+    /// left out: their type never reaches the generated source, so a payload
     /// conforming to one would name a type nothing declares.
     pub fn transparent_conformances(
         &self,
-        id: RecordId,
+        payload: TransparentPayload,
     ) -> impl Iterator<Item = &'bindings CanonicalName> + '_ {
         self.bindings
             .decls()
@@ -164,7 +164,7 @@ impl<'bindings, S: Surface> RenderContext<'bindings, S> {
                         && enumeration
                             .variants()
                             .iter()
-                            .any(|variant| variant.transparent_payload() == Some(id)) =>
+                            .any(|variant| variant.transparent_payload() == Some(payload)) =>
                 {
                     Some(enumeration.name())
                 }
@@ -172,11 +172,11 @@ impl<'bindings, S: Surface> RenderContext<'bindings, S> {
             })
     }
 
-    /// Returns whether the record is the payload of a transparent data-enum
+    /// Returns whether the type is the payload of a transparent data-enum
     /// variant this render emits, i.e. whether its rendered type declares
     /// supertypes.
-    pub fn is_transparent_payload(&self, id: RecordId) -> bool {
-        self.transparent_conformances(id).next().is_some()
+    pub fn is_transparent_payload(&self, payload: TransparentPayload) -> bool {
+        self.transparent_conformances(payload).next().is_some()
     }
 
     /// Returns the function declaration with the given id.

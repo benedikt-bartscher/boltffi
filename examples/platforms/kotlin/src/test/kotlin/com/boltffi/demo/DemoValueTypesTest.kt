@@ -1013,4 +1013,23 @@ class DemoValueTypesTest {
             },
         )
     }
+
+    @Test
+    fun transparentCStyleEnumPayloadsAreTheVariants() {
+        // the enum entry is the variant, and `when` over the base matches the
+        // enum class; a wrapped variant reusing the enum keeps its own class
+        demoCase("case:enums.transparent.course.should_roundtrip_a_c_style_enum_payload")
+        assertEquals(Heading.WEST, echoCourse(Heading.WEST))
+        assertEquals(Course.Bearing(Heading.EAST), echoCourse(Course.Bearing(Heading.EAST)))
+        val crossed: Course = echoCourse(Heading.SOUTH)
+        assertEquals(
+            Heading.SOUTH,
+            when (crossed) {
+                is Heading -> crossed
+                is Point -> null
+                is Course.Bearing -> null
+                Course.Unset -> null
+            },
+        )
+    }
 }

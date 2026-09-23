@@ -25,8 +25,16 @@ use boltffi_binding::{Bindings, Native, lower};
 /// Two enums share `Ping`, so the same payload carries a different tag in
 /// each — the reason the tag cannot live on the payload. `Ping` is direct
 /// (one fixed-width primitive) and `Note` is encoded, so both payload lanes
-/// are covered, alongside a wrapped scalar variant and `Unset`.
+/// are covered, alongside a wrapped scalar variant and `Unset`. `Mode` is a
+/// C-style enum payload shared the same way, and reused by a wrapped variant.
 const SOURCE: &str = r#"
+#[repr(i32)]
+#[data]
+pub enum Mode {
+    Fast = 0,
+    Slow = 1,
+}
+
 #[data]
 pub struct Ping {
     sequence: u32,
@@ -45,6 +53,9 @@ pub enum Envelope {
     #[boltffi::transparent]
     Note(Note),
     Raw(String),
+    #[boltffi::transparent]
+    Mode(Mode),
+    Fallback(Mode),
 }
 
 #[data]
@@ -52,6 +63,8 @@ pub enum Reply {
     #[boltffi::transparent]
     Ping(Ping),
     Ack,
+    #[boltffi::transparent]
+    Mode(Mode),
 }
 
 #[export]
@@ -128,6 +141,26 @@ else:
 assert not hasattr(ping, "__dict__")
 assert hash(ping) == hash(demo.Ping(sequence=7))
 assert pickle.loads(pickle.dumps(ping)) == ping
+
+# a C-style enum payload is its own variant too: the IntEnum inherits the
+# bases, keeps its int semantics, and decodes back to the same member
+slow, fast = demo.Mode.SLOW, demo.Mode.FAST
+assert [c.__name__ for c in demo.Mode.__mro__][:3] == ["Mode", "Envelope", "Reply"], demo.Mode.__mro__
+assert isinstance(slow, demo.Envelope) and isinstance(slow, demo.Reply)
+assert slow == 1 and demo.Mode(1) is slow
+assert demo.Envelope._boltffi_wire_value(slow) != demo.Reply._boltffi_wire_value(slow)
+assert demo.Envelope._boltffi_from_wire(demo.Envelope._boltffi_wire_value(slow)) is slow
+assert demo.Reply._boltffi_from_wire(demo.Reply._boltffi_wire_value(fast)) is fast
+match demo.Envelope._boltffi_from_wire(demo.Envelope._boltffi_wire_value(slow)):
+    case demo.Mode.SLOW:
+        pass
+    case _:
+        raise AssertionError("transparent enum payload did not match its member")
+# a wrapped variant reusing the enum keeps its own tag and wrapper
+fallback = demo.EnvelopeFallback(slow)
+assert demo.Envelope._boltffi_wire_value(fallback) != demo.Envelope._boltffi_wire_value(slow)
+assert demo.Envelope._boltffi_from_wire(demo.Envelope._boltffi_wire_value(fallback)) == fallback
+assert pickle.loads(pickle.dumps(slow)) is slow
 
 # inheriting python bases makes instances GC-tracked; the dealloc must untrack
 for _ in range(50_000):

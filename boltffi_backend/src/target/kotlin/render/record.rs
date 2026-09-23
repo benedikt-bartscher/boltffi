@@ -2,7 +2,7 @@ use askama::Template as AskamaTemplate;
 use boltffi_binding::{
     CanonicalName, ConstantOwner, DirectFieldDecl, DirectRecordDecl, EncodedFieldDecl,
     EncodedRecordDecl, ExportedMethodDecl, FieldKey, InitializerDecl, Native, NativeSymbol,
-    Receive, RecordDecl, RecordId, TypeRef,
+    Receive, RecordDecl, RecordId, TransparentPayload, TypeRef,
 };
 
 use crate::{
@@ -178,7 +178,7 @@ impl Record {
     /// this record as their payload.
     fn conformances(id: RecordId, context: &RenderContext<Native>) -> Vec<TypeName> {
         context
-            .transparent_conformances(id)
+            .transparent_conformances(TransparentPayload::Record(id))
             .map(|name| Name::new(name).type_name())
             .collect()
     }

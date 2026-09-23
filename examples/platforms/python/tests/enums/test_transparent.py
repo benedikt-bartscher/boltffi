@@ -26,3 +26,10 @@ class TransparentVariantTests(DemoTestCase):
         self.assertIsInstance(point, demo.Anchor)
         self.assertNotIsInstance(demo.Label("north"), demo.Anchor)
         self.assertEqual(demo.echo_anchor(demo.AnchorOrigin()), demo.AnchorOrigin())
+
+    def test_c_style_enum_payloads_are_the_variants(self) -> None:
+        self.demo_case("case:enums.transparent.course.should_roundtrip_a_c_style_enum_payload")
+        self.assertIs(demo.echo_course(demo.Heading.WEST), demo.Heading.WEST)
+        self.assertIsInstance(demo.Heading.WEST, demo.Course)
+        # a wrapped variant reusing the enum keeps its own class
+        self.assertEqual(demo.echo_course(demo.CourseBearing(demo.Heading.EAST)), demo.CourseBearing(demo.Heading.EAST))

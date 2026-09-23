@@ -947,6 +947,50 @@ mod tests {
     }
 
     #[test]
+    fn python_target_renders_transparent_c_style_enum_payloads() {
+        let output = target()
+            .render(&bindings(
+                r#"
+                #[repr(i32)]
+                #[data]
+                pub enum Mode {
+                    Fast = 0,
+                    Slow = 1,
+                }
+
+                #[data]
+                pub enum Setting {
+                    Unset,
+                    #[boltffi::transparent]
+                    Mode(Mode),
+                    Raw(Mode),
+                }
+
+                #[export]
+                pub fn echo_setting(setting: Setting) -> Setting {
+                    setting
+                }
+                "#,
+            ))
+            .expect("Python target should render transparent C-style enum payloads");
+        let init = file(&output, "demo/__init__.py");
+        let stub = file(&output, "demo/__init__.pyi");
+
+        // the IntEnum inherits the enum class, so it is defined after it
+        assert!(init.contains("class Mode(Setting, IntEnum):"));
+        assert!(stub.contains("class Mode(Setting, IntEnum):"));
+        assert!(init.find("class Setting:") < init.find("class Mode(Setting, IntEnum):"));
+        // no wrapper class for the transparent variant, one for the reuse
+        assert!(!init.contains("class SettingMode"));
+        assert!(init.contains("class SettingRaw(Setting):"));
+        // the enum class dispatches the C-style enum through the enum codec
+        assert!(init.contains("if isinstance(value, Mode):"));
+        assert!(init.contains(
+            "return _boltffi_wire_u32(1) + _boltffi_wire_i32(_boltffi_enum_value(value, Mode, \"Mode\"))"
+        ));
+    }
+
+    #[test]
     fn python_target_renders_direct_transparent_payloads_through_a_type_factory() {
         let output = target()
             .render(&bindings(

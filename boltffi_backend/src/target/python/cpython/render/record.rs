@@ -2,7 +2,7 @@ use askama::Template as AskamaTemplate;
 use boltffi_binding::{
     CanonicalName, DefaultValue, DirectFieldDecl, DirectRecordDecl, EncodedRecordDecl,
     ExportedMethodDecl, FieldKey, InitializerDecl, Native, NativeSymbol, Primitive, RecordDecl,
-    RecordId,
+    RecordId, TransparentPayload,
 };
 
 use crate::{
@@ -254,7 +254,7 @@ impl Record {
             .collect::<Result<Vec<_>>>()?;
         let primitives = fields.iter().map(Field::primitive).collect();
         let callables = Self::direct_callables(record, &symbols, bridge, context)?;
-        let conforming = context.is_transparent_payload(record.id());
+        let conforming = context.is_transparent_payload(TransparentPayload::Record(record.id()));
         let method = conforming
             .then(|| {
                 ExtensionMethod::new(

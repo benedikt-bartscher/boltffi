@@ -1,6 +1,7 @@
 use boltffi_binding::{
     ConstantOwner, DirectFieldDecl, DirectRecordDecl, EncodedFieldDecl, EncodedRecordDecl,
     ExportedMethodDecl, FieldKey, InitializerDecl, Native, NativeSymbol, Receive,
+    TransparentPayload,
 };
 
 use crate::{
@@ -69,7 +70,7 @@ impl RecordClass {
                 record.fields(),
                 record.layout(),
             )?),
-            bases: package.transparent_conformances(record.id())?,
+            bases: package.transparent_conformances(TransparentPayload::Record(record.id()))?,
             type_factory: symbols.type_factory().clone(),
             constructors: Self::constructors(record.initializers(), &symbols, package)?,
             static_methods: Self::static_methods(record.methods(), &symbols, package)?,
@@ -100,7 +101,7 @@ impl RecordClass {
             fields,
             constants: package.constants_for_owner(ConstantOwner::Record(record.id()))?,
             wire: RecordWire::Fields(wire_fields),
-            bases: package.transparent_conformances(record.id())?,
+            bases: package.transparent_conformances(TransparentPayload::Record(record.id()))?,
             type_factory: symbols.type_factory().clone(),
             constructors: Self::constructors(record.initializers(), &symbols, package)?,
             static_methods: Self::static_methods(record.methods(), &symbols, package)?,

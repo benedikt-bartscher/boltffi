@@ -1,8 +1,8 @@
 use askama::Template as AskamaTemplate;
 use boltffi_binding::{
-    CStyleEnumDecl, CStyleVariantDecl, ConstantOwner, DataEnumDecl, DataVariantDecl,
-    DataVariantPayload, EnumDecl, EnumId, ExportedMethodDecl, InitializerDecl, Native,
-    NativeSymbol, Primitive, Receive, VariantTag,
+    CStyleEnumDecl, CStyleVariantDecl, CodecSize, CodecWrite, ConstantOwner, DataEnumDecl,
+    DataVariantDecl, DataVariantPayload, EnumDecl, EnumId, ExportedMethodDecl, InitializerDecl,
+    Native, NativeSymbol, Primitive, Receive, TransparentPayload, ValueRef, VariantTag,
 };
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
     core::{Emitted, RenderContext, Result},
     target::kotlin::{
         KotlinHost,
-        codec::WireBuffer,
+        codec::{Sizer, WireBuffer, Writer},
         name_style::KotlinPackage,
         name_style::Name,
         primitive::KotlinPrimitive,
@@ -48,15 +48,18 @@ enum Body {
         value_type: TypeName,
         repr: Primitive,
         variants: Vec<CStyleVariant>,
+        /// The sealed interfaces of the transparent enums this enum is a
+        /// payload of, in contract order.
+        conformances: Vec<TypeName>,
     },
     Data {
         variants: Vec<DataVariant>,
         wire_size_type: TypeName,
-        /// Whether any variant renders as its payload record. A transparent
+        /// Whether any variant renders as its payload type. A transparent
         /// enum renders as a sealed interface whose codec lives on the
         /// companion, because the variant tag depends on which enum a shared
-        /// payload record is written through and so cannot be a member of
-        /// the payload.
+        /// payload type is written through and so cannot be a member of the
+        /// payload.
         transparent: bool,
     },
 }
@@ -218,6 +221,27 @@ impl Enumeration {
 
     pub fn data(&self) -> bool {
         matches!(&self.body, Body::Data { .. })
+    }
+
+    /// The supertype clause of a C-style enum: `Exception()` for an error
+    /// enum, then the sealed interface of every transparent enum it is a
+    /// payload of. Kotlin cannot declare conformance after the fact, so the
+    /// enum's own declaration is the only place the interfaces can go.
+    pub fn c_style_supertypes(&self) -> String {
+        let conformances = match &self.body {
+            Body::CStyle { conformances, .. } => conformances.as_slice(),
+            Body::Data { .. } => &[],
+        };
+        let parts = self
+            .error
+            .then(|| "Exception()".to_owned())
+            .into_iter()
+            .chain(conformances.iter().map(ToString::to_string))
+            .collect::<Vec<_>>();
+        match parts.is_empty() {
+            true => String::new(),
+            false => format!(" : {}", parts.join(", ")),
+        }
     }
 
     pub fn transparent(&self) -> bool {
@@ -419,6 +443,10 @@ impl Enumeration {
                     .iter()
                     .map(|variant| CStyleVariant::from_c_style(variant, enumeration, error))
                     .collect::<Result<Vec<_>>>()?,
+                conformances: context
+                    .transparent_conformances(TransparentPayload::Enum(enumeration.id()))
+                    .map(|name| Name::new(name).type_name())
+                    .collect(),
             },
             initializers: Self::initializer_calls(
                 enumeration.initializers(),
@@ -788,7 +816,7 @@ impl DataVariant {
             [tag.clone()].into_iter().collect::<ArgumentList>(),
         ));
         if variant.transparent() {
-            return Self::from_transparent(variant, name, tag, tag_write, fields);
+            return Self::from_transparent(variant, name, tag, tag_write, fields, host, context);
         }
         let read = Self::read_expression(name.clone(), &fields);
         let size = fields
@@ -814,15 +842,19 @@ impl DataVariant {
     }
 
     /// A transparent variant has no class of its own: dispatch matches the
-    /// payload record type, the payload writes itself, and reads produce the
-    /// payload directly. Lowering pinned the payload to exactly one record,
-    /// so the record codec methods are the whole wire shape.
+    /// payload type, and reads produce the payload directly. Lowering pinned
+    /// the payload to exactly one record or C-style enum, so the record's
+    /// codec methods, or the C-style enum codec over the value itself, are
+    /// the whole wire shape.
+    #[allow(clippy::too_many_arguments)]
     fn from_transparent(
         variant: &DataVariantDecl,
         name: Identifier,
         tag: Expression,
         tag_write: Statement,
         fields: Vec<EncodedField>,
+        host: &KotlinHost,
+        context: &RenderContext<Native>,
     ) -> Result<Self> {
         let [field] = fields.as_slice() else {
             return Err(KotlinHost::broken_bridge_contract(
@@ -831,25 +863,48 @@ impl DataVariant {
         };
         let subject = field.ty().clone();
         let payload = Expression::identifier(Identifier::parse("value")?);
-        Ok(Self {
-            subject,
-            documentation: Documentation::new(variant.meta().doc()),
-            read: field.read().clone(),
-            size: Expression::add(
-                Expression::integer(4),
+        let writer = Identifier::parse("writer")?;
+        let (payload_size, payload_writes) = match variant.transparent_payload() {
+            Some(TransparentPayload::Record(_)) => (
                 Expression::call(
                     payload.clone(),
                     Identifier::parse("wireSize")?,
                     ArgumentList::default(),
                 ),
+                vec![Statement::expression(Expression::call(
+                    payload,
+                    Identifier::parse("writeTo")?,
+                    [Expression::identifier(writer)]
+                        .into_iter()
+                        .collect::<ArgumentList>(),
+                ))],
             ),
-            payload_writes: vec![Statement::expression(Expression::call(
-                payload,
-                Identifier::parse("writeTo")?,
-                [Expression::identifier(Identifier::parse("writer")?)]
+            // A C-style enum carries no codec members, so the C-style enum
+            // codec encodes the dispatched value itself.
+            Some(TransparentPayload::Enum(id)) => (
+                Sizer::new(host, context)?
+                    .current(payload.clone())
+                    .c_style_enum(id, &ValueRef::self_value())?
+                    .into_expression(),
+                Writer::new(writer, host, context)?
+                    .current(payload)
+                    .c_style_enum(id, &ValueRef::self_value())
                     .into_iter()
-                    .collect::<ArgumentList>(),
-            ))],
+                    .map(|write| write.map(|write| write.into_statement()))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+            None => {
+                return Err(KotlinHost::broken_bridge_contract(
+                    "transparent variant was lowered without a payload type",
+                ));
+            }
+        };
+        Ok(Self {
+            subject,
+            documentation: Documentation::new(variant.meta().doc()),
+            read: field.read().clone(),
+            size: Expression::add(Expression::integer(4), payload_size),
+            payload_writes,
             name,
             tag,
             fields,

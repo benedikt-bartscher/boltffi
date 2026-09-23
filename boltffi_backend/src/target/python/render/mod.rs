@@ -4,7 +4,7 @@ use askama::Template as AskamaTemplate;
 use boltffi_binding::{
     CStyleEnumDecl, CanonicalName, ClassDecl, ClassId, CodecNode, ConstantDecl, ConstantOwner,
     CustomTypeDecl, CustomTypeId, DeclarationRef, EncodedRecordDecl, EnumDecl, EnumId,
-    FunctionDecl, Native, RecordDecl, RecordId, StreamDecl, TypeRef,
+    FunctionDecl, Native, RecordDecl, RecordId, StreamDecl, TransparentPayload, TypeRef,
 };
 
 use crate::{
@@ -321,12 +321,12 @@ impl<'bindings> Package<'bindings> {
     }
 
     /// The enum classes of the transparent enums whose variants carry this
-    /// record as their payload, in contract order. The record class inherits
+    /// type as their payload, in contract order. The payload class inherits
     /// them so `isinstance` against the enum class holds for payloads read
     /// straight off the wire.
-    pub fn transparent_conformances(&self, record_id: RecordId) -> Result<Vec<Identifier>> {
+    pub fn transparent_conformances(&self, payload: TransparentPayload) -> Result<Vec<Identifier>> {
         self.context
-            .transparent_conformances(record_id)
+            .transparent_conformances(payload)
             .map(|name| Identifier::parse(Name::new(name).class()))
             .collect()
     }
@@ -541,8 +541,12 @@ impl<'bindings> Package<'bindings> {
             .collect()
     }
 
+    /// The enum classes in contract order, except that a C-style enum
+    /// inheriting transparent enum classes moves after every data enum: its
+    /// class statement needs its bases defined.
     fn enums(&self) -> Result<Vec<EnumClass>> {
-        self.declarations
+        let (conforming, rest): (Vec<_>, Vec<_>) = self
+            .declarations
             .enums
             .iter()
             .copied()
@@ -554,7 +558,10 @@ impl<'bindings> Package<'bindings> {
                     shape: "unknown enum package",
                 }),
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .partition(EnumClass::conforms);
+        Ok(rest.into_iter().chain(conforming).collect())
     }
 
     fn classes(&self) -> Result<Vec<Class>> {

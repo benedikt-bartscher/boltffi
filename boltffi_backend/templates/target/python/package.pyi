@@ -92,7 +92,7 @@ class {{ variant.class_name }}({{ enumeration.class_name }}):
 
 {% endfor %}
 {%- else %}
-class {{ enumeration.class_name }}(IntEnum):
+class {{ enumeration.class_name }}({% for base in enumeration.bases %}{{ base }}, {% endfor %}IntEnum):
 {{- enumeration.documentation.docstring("    ") }}
 {%- for variant in enumeration.variants %}
     {{ variant.name }} = {{ variant.value }}

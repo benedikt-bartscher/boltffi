@@ -1,8 +1,9 @@
-//! Data enums whose record payloads *are* the variants.
+//! Data enums whose record and C-style enum payloads *are* the variants.
 //!
 //! `Point` is blittable and `Label` is not, so the two payload lanes are both
 //! covered; `Point` is transparent in two enums at once, which is the case
-//! that forces the tag onto the base rather than the payload.
+//! that forces the tag onto the base rather than the payload. `Heading` is a
+//! C-style enum payload, which takes the enum as a supertype the same way.
 //!
 //! Behind the `transparent-demo` feature: only the Kotlin and Python backends
 //! render transparent variants, and the others reject them at generate time,
@@ -167,4 +168,62 @@ pub fn echo_waypoint(waypoint: Waypoint) -> Waypoint {
 )]
 pub fn echo_anchor(anchor: Anchor) -> Anchor {
     anchor
+}
+
+#[data]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Heading {
+    North = 0,
+    East = 1,
+    South = 2,
+    West = 3,
+}
+
+/// A C-style enum payload next to a record one; `Bearing` reuses `Heading`
+/// in a wrapped variant, which keeps its own class.
+#[data]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Course {
+    Unset,
+    #[boltffi::transparent]
+    Heading(Heading),
+    #[boltffi::transparent]
+    Point(Point),
+    Bearing(Heading),
+}
+
+#[export]
+#[demo_bench_macros::demo_case(
+    "enums.transparent.course.should_roundtrip_a_c_style_enum_payload",
+    justification = "A C-style enum payload is the variant itself, so an enum entry crosses the wire without a wrapper object, next to a wrapped variant reusing the same enum.",
+    directions = "Call `enums::transparent::echo_course` with a Heading entry directly and assert the same entry returns, then with the Bearing variant wrapping a Heading and assert it returns an equal Bearing.",
+    exclude(
+        swift,
+        reason = ExclusionReason::ImplementationGap,
+        details = "The Swift backend renders a data enum as a Swift enum, whose cases a payload struct cannot be, so it rejects transparent variants at generate time."
+    ),
+    exclude(
+        java,
+        reason = ExclusionReason::ImplementationGap,
+        details = "The Java backend rejects transparent variants at generate time."
+    ),
+    exclude(
+        csharp,
+        reason = ExclusionReason::ImplementationGap,
+        details = "A C# payload is a readonly record struct, which cannot inherit the abstract record a data enum renders as, so the backend rejects transparent variants at generate time."
+    ),
+    exclude(
+        typescript,
+        reason = ExclusionReason::ImplementationGap,
+        details = "The TypeScript backend discriminates its union on a tag field, which a transparent payload does not carry, so it rejects transparent variants at generate time."
+    ),
+    exclude(
+        dart,
+        reason = ExclusionReason::ImplementationGap,
+        details = "The Dart backend rejects transparent variants at generate time."
+    )
+)]
+pub fn echo_course(course: Course) -> Course {
+    course
 }

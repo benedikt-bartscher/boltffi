@@ -232,8 +232,9 @@ pub enum LowerErrorKind {
     /// A tuple field index could not fit in a field position.
     FieldPositionOverflow,
     /// A `#[boltffi::transparent]` variant has a shape the attribute cannot
-    /// take: a payload that is not exactly one record, or a payload record
-    /// another transparent variant of the same enum already carries.
+    /// take: a payload that is not exactly one record or C-style enum, or a
+    /// payload type another transparent variant of the same enum already
+    /// carries.
     InvalidTransparentVariant {
         /// Enum owning the variant.
         enumeration: String,
