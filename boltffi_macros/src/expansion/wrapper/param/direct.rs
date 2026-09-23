@@ -368,3 +368,35 @@ impl WasmRecordParam {
         }
     }
 }
+
+impl Tokens {
+    pub fn with_direct_writeback(
+        mut self,
+        rust_type: &Type,
+        receiver: &Ident,
+        failure: &TokenStream,
+    ) -> Self {
+        if !self.writebacks.is_empty() {
+            return self;
+        }
+        let out = names::Parameter::new(receiver).writeback();
+        let ffi_type = quote! { *mut <#rust_type as ::boltffi::__private::Passable>::In };
+        self.ffi_parameters.push(quote! { #out: #ffi_type });
+        self.ffi_parameter_types.push(ffi_type);
+        self.conversions.push(quote! {
+            if #out.is_null() {
+                ::boltffi::__private::set_last_error("receiver writeback pointer is null".to_string());
+                #failure
+            }
+        });
+        self.writebacks.push(quote! {
+            unsafe {
+                ::core::ptr::write_unaligned(
+                    #out,
+                    <#rust_type as ::boltffi::__private::Passable>::pack(#receiver)
+                );
+            }
+        });
+        self
+    }
+}

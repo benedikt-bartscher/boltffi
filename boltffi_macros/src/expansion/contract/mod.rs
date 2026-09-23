@@ -3579,6 +3579,38 @@ mod tests {
     }
 
     #[test]
+    fn native_scalar_enum_mutation_has_writeback_storage() {
+        let method = record_method("replace", Receiver::Mutable, Vec::new(), ReturnDef::Void);
+        let mut source = SourceContract::new(PackageInfo::new("demo", None));
+        source.enums.push(status_enum_with_method(method));
+        let lowered = lower_with_declarations::<Native>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+        let tokens = expand_enumeration(&expansion, &source.enums[0]).expect("mutable enum");
+        let rendered = tokens.to_string();
+        assert!(rendered.contains(
+            "__boltffi_receiver_out : * mut < Status as :: boltffi :: __private :: Passable > :: In"
+        ));
+        assert!(rendered.contains("receiver writeback pointer is null"));
+        assert!(rendered.contains(":: core :: ptr :: write_unaligned (__boltffi_receiver_out"));
+    }
+
+    #[test]
+    fn wasm32_scalar_enum_mutation_has_writeback_storage() {
+        let method = record_method("replace", Receiver::Mutable, Vec::new(), ReturnDef::Void);
+        let mut source = SourceContract::new(PackageInfo::new("demo", None));
+        source.enums.push(status_enum_with_method(method));
+        let lowered = lower_with_declarations::<Wasm32>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+        let tokens = expand_enumeration(&expansion, &source.enums[0]).expect("mutable enum");
+        let rendered = tokens.to_string();
+        assert!(rendered.contains(
+            "__boltffi_receiver_out : * mut < Status as :: boltffi :: __private :: Passable > :: In"
+        ));
+        assert!(rendered.contains("receiver writeback pointer is null"));
+        assert!(rendered.contains(":: core :: ptr :: write_unaligned (__boltffi_receiver_out"));
+    }
+
+    #[test]
     fn native_c_style_enum_expansion_emits_static_method_wrapper() {
         let method = record_method(
             "count",
@@ -3796,6 +3828,38 @@ mod tests {
         assert!(rendered.contains("let __boltffi_receiver : Event ="));
         assert!(!rendered.contains("__boltffi_receiver_storage"));
         assert!(rendered.contains("__boltffi_receiver . label ()"));
+    }
+
+    #[test]
+    fn native_data_enum_mutation_has_writeback_storage() {
+        let method = record_method("replace", Receiver::Mutable, Vec::new(), ReturnDef::Void);
+        let mut source = SourceContract::new(PackageInfo::new("demo", None));
+        source.enums.push(event_enum_with_method(method));
+        let lowered = lower_with_declarations::<Native>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+        let tokens = expand_enumeration(&expansion, &source.enums[0]).expect("mutable enum");
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("__boltffi_receiver_out : * mut :: boltffi :: __private :: FfiBuf")
+        );
+        assert!(rendered.contains("__boltffi_receiver_storage"));
+        assert!(rendered.contains(":: core :: ptr :: write (__boltffi_receiver_out"));
+    }
+
+    #[test]
+    fn wasm32_data_enum_mutation_has_writeback_storage() {
+        let method = record_method("replace", Receiver::Mutable, Vec::new(), ReturnDef::Void);
+        let mut source = SourceContract::new(PackageInfo::new("demo", None));
+        source.enums.push(event_enum_with_method(method));
+        let lowered = lower_with_declarations::<Wasm32>(&source).expect("lowered bindings");
+        let expansion = Expansion::new(&lowered);
+        let tokens = expand_enumeration(&expansion, &source.enums[0]).expect("mutable enum");
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("__boltffi_receiver_out : * mut :: boltffi :: __private :: FfiBuf")
+        );
+        assert!(rendered.contains("__boltffi_receiver_storage"));
+        assert!(rendered.contains(":: core :: ptr :: write (__boltffi_receiver_out"));
     }
 
     #[test]
