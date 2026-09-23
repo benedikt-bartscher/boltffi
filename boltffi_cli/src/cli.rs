@@ -265,7 +265,7 @@ pub(crate) enum PackTargetArg {
 
     #[command(
         about = "Build + package Android artifacts",
-        long_about = "Build + package Android artifacts.\n\nOutputs:\n  - Kotlin/JNI:             {targets.android.kotlin.output}\n  - jniLibs:                {targets.android.pack.output}\n  - Kotlin desktop natives: {targets.android.output}/desktopJniLibs when targets.android.kotlin.desktop_pack.enabled is true and targets.android.kotlin.desktop_loader is bundled\n"
+        long_about = "Build + package Android artifacts.\n\nOutputs:\n  - Kotlin/JNI:             {targets.android.kotlin.output}\n  - jniLibs:                {targets.android.pack.output}, unless --desktop-only; with --architecture only the selected ABIs are relinked and the other configured ones are kept\n  - Kotlin desktop natives: {targets.android.output}/desktopJniLibs when targets.android.kotlin.desktop_pack.enabled is true and targets.android.kotlin.desktop_loader is bundled, unless --skip-desktop\n  - Debug symbols:          {targets.android.debug_symbols.output}/<crate>.android.symbols.zip, or one <crate>.android.<abi>.symbols.zip per ABI when --architecture packs only some of the configured ABIs\n"
     )]
     Android {
         #[arg(long)]
@@ -1639,6 +1639,26 @@ enabled = true
                 "`--architecture {configured}` should parse"
             );
         }
+    }
+
+    /// `Architecture` is shared by every platform, so a variant added for another
+    /// one has to be skipped explicitly or it shows up under `--architecture`.
+    #[test]
+    fn cli_architecture_values_are_exactly_the_android_architectures() {
+        use clap::ValueEnum;
+        use std::collections::HashSet;
+
+        assert_eq!(
+            Architecture::value_variants()
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>(),
+            Platform::Android
+                .architectures()
+                .iter()
+                .copied()
+                .collect::<HashSet<_>>()
+        );
     }
 
     #[test]

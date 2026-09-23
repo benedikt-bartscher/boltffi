@@ -25,7 +25,7 @@ use super::{
     resolve_build_cargo_args,
 };
 
-pub(crate) use self::link::{AndroidPackageLayout, AndroidPackager};
+pub(crate) use self::link::{AndroidPackScope, AndroidPackageLayout, AndroidPackager};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AndroidBindingMode {
@@ -151,6 +151,15 @@ impl AndroidPackParts {
     /// still succeed, so it is refused the same way an architecture missing
     /// from the configuration is.
     fn for_run(config: &Config, options: &PackAndroidOptions) -> Result<Self> {
+        // the parser already keeps these apart; options built in code must too
+        if options.desktop_only && options.skip_desktop {
+            return Err(CliError::CommandFailed {
+                command: "pack android cannot combine --desktop-only with --skip-desktop"
+                    .to_string(),
+                status: None,
+            });
+        }
+
         let parts = Self {
             architectures: !options.desktop_only,
             desktop_natives: should_package_android_kotlin_desktop_natives(
@@ -214,10 +223,18 @@ fn package_android_architectures(
         )?;
     }
 
-    let packager = AndroidPackager::new(config, android_libraries, build_profile.is_release_like());
+    let packager = AndroidPackager::new(config, android_libraries, build_profile.is_release_like())
+        .with_scope(AndroidPackScope::of(config, android_targets));
     let step = reporter.step("Packaging jniLibs");
-    packager.package()?;
+    let output = packager.package()?;
     step.finish_success();
+
+    if !output.kept_abis.is_empty() {
+        reporter.warning(&format!(
+            "kept jniLibs for {} from an earlier run without relinking them; pack those too if the bindings changed",
+            output.kept_abis.join(", ")
+        ));
+    }
 
     Ok(())
 }
@@ -228,7 +245,7 @@ fn ensure_android_kotlin_desktop_no_build_supported(
 ) -> Result<()> {
     if no_build && desktop_natives {
         return Err(CliError::CommandFailed {
-            command: "pack android --no-build is unsupported while Kotlin desktop native packaging is enabled; rerun without --no-build, or pass --skip-desktop".to_string(),
+            command: "pack android --no-build is unsupported while Kotlin desktop native packaging is enabled; rerun without --no-build".to_string(),
             status: None,
         });
     }
@@ -263,9 +280,13 @@ fn selected_android_targets(
             unknown
         });
     if !unknown.is_empty() {
+        let (noun, verb) = match unknown.len() {
+            1 => ("architecture", "is"),
+            _ => ("architectures", "are"),
+        };
         return Err(CliError::CommandFailed {
             command: format!(
-                "architecture(s) {} are not configured under targets.android.architectures",
+                "{noun} {} {verb} not configured under targets.android.architectures",
                 unknown.join(", ")
             ),
             status: None,
@@ -544,7 +565,16 @@ architectures = ["x86_64", "arm64"]
         };
         assert_eq!(
             command,
-            "architecture(s) armv7, x86 are not configured under targets.android.architectures"
+            "architectures armv7, x86 are not configured under targets.android.architectures"
+        );
+
+        let error = selected_android_targets(&config, &[Architecture::X86]).unwrap_err();
+        let CliError::CommandFailed { command, .. } = error else {
+            panic!("expected a command failure, got {error:?}");
+        };
+        assert_eq!(
+            command,
+            "architecture x86 is not configured under targets.android.architectures"
         );
     }
 
@@ -650,8 +680,16 @@ enabled = true
             };
             assert!(command.starts_with("pack android --desktop-only needs"));
         }
-        // the parser keeps the two flags apart; a caller building the options
-        // directly still cannot end up packing nothing
-        assert!(AndroidPackParts::for_run(&desktop_enabled, &pack_options(true, true)).is_err());
+        // the parser keeps the two flags apart; options built in code get the
+        // same refusal instead of a message blaming the configuration
+        let error =
+            AndroidPackParts::for_run(&desktop_enabled, &pack_options(true, true)).unwrap_err();
+        let CliError::CommandFailed { command, .. } = error else {
+            panic!("expected a command failure, got {error:?}");
+        };
+        assert_eq!(
+            command,
+            "pack android cannot combine --desktop-only with --skip-desktop"
+        );
     }
 }
