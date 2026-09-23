@@ -189,10 +189,10 @@ impl<'a> Builder<'a> {
     /// Cargo locks the artifact directory for the whole of a build, and a cross
     /// build also writes to the host one next to it, so builds sharing a target
     /// directory run one after another however many cores sit idle. A target
-    /// directory per target lifts that. The build directory is left to cargo's
-    /// configuration: by default it follows the target directory, while a shared
-    /// `build.build-dir` with `-Zfine-grain-locking` also shares the units the
-    /// targets have in common, such as build scripts and proc macros.
+    /// directory per target lifts that, as long as the build directory follows
+    /// the target directory, which is cargo's default. A shared `build.build-dir`
+    /// queues the builds behind its lock again, and with `-Zfine-grain-locking`
+    /// two of them compiling the same build scripts can deadlock.
     pub fn build_targets_concurrently(
         &self,
         targets: &[RustTarget],
