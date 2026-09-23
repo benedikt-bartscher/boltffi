@@ -179,7 +179,7 @@ fn ensure_android_kotlin_desktop_no_build_supported(
 ) -> Result<()> {
     if no_build && should_package_android_kotlin_desktop_natives(config, skip_desktop) {
         return Err(CliError::CommandFailed {
-            command: "pack android --no-build is unsupported while Kotlin desktop native packaging is enabled; rerun without --no-build".to_string(),
+            command: "pack android --no-build is unsupported while Kotlin desktop native packaging is enabled; rerun without --no-build, or pass --skip-desktop".to_string(),
             status: None,
         });
     }
@@ -216,7 +216,7 @@ fn selected_android_targets(
         return Ok(configured);
     }
 
-    let unknown: Vec<_> = architectures
+    let unknown = architectures
         .iter()
         .filter(|architecture| {
             !configured
@@ -224,7 +224,12 @@ fn selected_android_targets(
                 .any(|target| target.architecture() == **architecture)
         })
         .map(|architecture| architecture.canonical_name())
-        .collect();
+        .fold(Vec::new(), |mut unknown, name| {
+            if !unknown.contains(&name) {
+                unknown.push(name);
+            }
+            unknown
+        });
     if !unknown.is_empty() {
         return Err(CliError::CommandFailed {
             command: format!(
@@ -495,7 +500,12 @@ architectures = ["x86_64", "arm64"]
 
         let error = selected_android_targets(
             &config,
-            &[Architecture::Arm64, Architecture::Armv7, Architecture::X86],
+            &[
+                Architecture::Arm64,
+                Architecture::Armv7,
+                Architecture::X86,
+                Architecture::Armv7,
+            ],
         )
         .unwrap_err();
 
