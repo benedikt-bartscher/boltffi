@@ -204,28 +204,6 @@ pub(crate) enum GenerateTargetArg {
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
-pub(crate) enum AndroidArchitectureArg {
-    Arm64,
-    Armv7,
-    // the derive would kebab-case this to `x86-64`; the configuration spells it
-    // `x86_64` under targets.android.architectures, and that has to be accepted
-    #[value(name = "x86_64", alias = "x86-64")]
-    X86_64,
-    X86,
-}
-
-impl From<AndroidArchitectureArg> for Architecture {
-    fn from(arg: AndroidArchitectureArg) -> Self {
-        match arg {
-            AndroidArchitectureArg::Arm64 => Architecture::Arm64,
-            AndroidArchitectureArg::Armv7 => Architecture::Armv7,
-            AndroidArchitectureArg::X86_64 => Architecture::X86_64,
-            AndroidArchitectureArg::X86 => Architecture::X86,
-        }
-    }
-}
-
-#[derive(Clone, Copy, clap::ValueEnum)]
 pub(crate) enum BuildPlatformArg {
     #[value(help = "Build Apple targets (iOS + iOS-simulator, and macOS if enabled)")]
     Apple,
@@ -301,7 +279,7 @@ pub(crate) enum PackTargetArg {
             value_name = "ARCH",
             help = "Build only this architecture, repeatable; defaults to every configured one"
         )]
-        architectures: Vec<AndroidArchitectureArg>,
+        architectures: Vec<Architecture>,
 
         #[arg(
             long,
@@ -631,7 +609,7 @@ pub(crate) fn execute_command(
                         deny_skipped,
                         cargo_args.clone(),
                     ),
-                    architectures: architectures.into_iter().map(Architecture::from).collect(),
+                    architectures,
                     skip_desktop,
                     desktop_only,
                 }),
@@ -1155,7 +1133,7 @@ mod tests {
     };
     use crate::commands::doctor::ConfigSummary;
     use crate::commands::pack::PackCommand;
-    use crate::target::{Architecture, RustTarget};
+    use crate::target::{Architecture, Platform, RustTarget};
     use crate::{cli::CliError, config::Config};
     use clap::Parser;
     use std::path::PathBuf;
@@ -1621,10 +1599,7 @@ enabled = true
             panic!("expected pack android");
         };
         assert_eq!(
-            architectures
-                .into_iter()
-                .map(Architecture::from)
-                .collect::<Vec<_>>(),
+            architectures,
             vec![
                 Architecture::Arm64,
                 Architecture::X86_64,
@@ -1643,6 +1618,26 @@ enabled = true
                     .err()
                     .unwrap_or_else(|| panic!("--desktop-only {conflicting} should be rejected"));
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    /// `--architecture` takes the spelling `targets.android.architectures` uses,
+    /// so a value copied out of the configuration always parses.
+    #[test]
+    fn cli_architecture_values_match_the_configuration_spelling() {
+        use clap::ValueEnum;
+
+        for architecture in Platform::Android.architectures() {
+            let configured = toml::Value::try_from(architecture)
+                .expect("serialize architecture")
+                .as_str()
+                .expect("architecture serializes as a string")
+                .to_string();
+            assert_eq!(
+                Architecture::from_str(&configured, false),
+                Ok(*architecture),
+                "`--architecture {configured}` should parse"
+            );
         }
     }
 
