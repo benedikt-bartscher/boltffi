@@ -1721,7 +1721,8 @@ export const RandomFillStatus = {
  * Builds `env.__boltffi_getrandom(ptr, len)`, the entropy source behind
  * `boltffi::wasm_getrandom_backend!`: it fills `len` bytes of wasm memory at
  * `ptr` from `crypto.getRandomValues`. `memory` is read per call, since the
- * import object exists before the instance does.
+ * import object exists before the instance does: a call from the module's
+ * start function, before instantiation finishes, returns `Unavailable`.
  */
 export function createRandomFillImport(
   memory: () => WebAssembly.Memory | undefined
