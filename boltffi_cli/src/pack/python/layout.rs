@@ -128,6 +128,38 @@ impl PythonPackageLayout {
         })
     }
 
+    /// Removes the setuptools `build/` and `*.egg-info` directories from the
+    /// source root. setuptools reuses them by mtime alone, so a leftover tree
+    /// can put a stale `_native` extension or stale files into the next wheel.
+    pub fn remove_setuptools_build_state(&self) -> Result<()> {
+        let egg_info_directories = std::fs::read_dir(&self.root_directory)
+            .map_err(|source| CliError::ReadFailed {
+                path: self.root_directory.clone(),
+                source,
+            })?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|source| CliError::ReadFailed {
+                path: self.root_directory.clone(),
+                source,
+            })?
+            .into_iter()
+            .filter(|path| {
+                path.is_dir()
+                    && path
+                        .extension()
+                        .is_some_and(|extension| extension == "egg-info")
+            });
+
+        std::iter::once(self.root_directory.join("build"))
+            .chain(egg_info_directories)
+            .try_for_each(|path| match std::fs::remove_dir_all(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(source) => Err(CliError::WriteFailed { path, source }),
+            })
+    }
+
     pub fn remove_packaged_native_libraries(&self) -> Result<()> {
         std::fs::read_dir(&self.package_directory)
             .map_err(|source| CliError::ReadFailed {
@@ -291,5 +323,35 @@ mod tests {
         assert!(!layout.package_directory.join("demo.dll").exists());
 
         fs::remove_dir_all(root_directory).expect("cleanup generated package directory");
+    }
+
+    #[test]
+    fn removes_setuptools_build_state_without_touching_sources() {
+        let root_directory = tempfile::tempdir().expect("create generated python root");
+        let layout = PythonPackageLayout::new(root_directory.path(), "demo_lib");
+        let stale_object = root_directory
+            .path()
+            .join("build/temp.linux-x86_64-cpython-313/demo_lib/_native.o");
+
+        fs::create_dir_all(stale_object.parent().expect("object directory"))
+            .expect("create stale build tree");
+        fs::write(&stale_object, []).expect("write stale object");
+        fs::create_dir_all(root_directory.path().join("demo_lib.egg-info"))
+            .expect("create stale egg-info");
+        fs::create_dir_all(&layout.package_directory).expect("create generated package directory");
+        fs::write(&layout.setup_script_path, []).expect("write setup script");
+        fs::write(&layout.native_bridge_source_path, []).expect("write native bridge source");
+
+        layout
+            .remove_setuptools_build_state()
+            .expect("remove setuptools build state");
+        layout
+            .remove_setuptools_build_state()
+            .expect("removing absent build state is a no-op");
+
+        assert!(!root_directory.path().join("build").exists());
+        assert!(!root_directory.path().join("demo_lib.egg-info").exists());
+        assert!(layout.setup_script_path.exists());
+        assert!(layout.native_bridge_source_path.exists());
     }
 }

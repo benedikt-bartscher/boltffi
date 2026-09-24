@@ -835,6 +835,8 @@ The shared library filename changes per host.
 - Linux: `.so`
 - Windows: `.dll`
 
+setuptools' `build/` and `*.egg-info` directories are removed before each wheel build, so every wheel is built from the current sources. A wheel missing the compiled `_native` extension or the shared library fails the pack.
+
 ### Interpreter Selection
 
 To package for specific installed interpreters on the current host.

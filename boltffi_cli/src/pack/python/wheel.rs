@@ -203,6 +203,7 @@ impl<'a> PythonWheelBuilder<'a> {
         verbose: bool,
     ) -> Result<PythonBuiltWheel> {
         let existing_wheels = self.current_wheels()?;
+        self.plan.layout.remove_setuptools_build_state()?;
         let mut command = interpreter.wheel_command(
             &self.plan.layout.root_directory,
             &self.plan.layout.wheel_directory,
@@ -244,7 +245,26 @@ impl<'a> PythonWheelBuilder<'a> {
             }
         }
 
-        self.new_wheel(interpreter, &existing_wheels)
+        let built_wheel = self.new_wheel(interpreter, &existing_wheels)?;
+        self.verify_wheel_contents(&built_wheel.wheel_path)?;
+        Ok(built_wheel)
+    }
+
+    /// `pip wheel` can succeed without the compiled bridge extension or the
+    /// staged shared library in the wheel; fail the pack instead.
+    fn verify_wheel_contents(&self, wheel_path: &Path) -> Result<()> {
+        let extension_module = self.plan.layout.native_bridge_source_path.file_stem();
+        let shared_library = self.plan.packaged_shared_library_path();
+
+        verify_wheel_contents(
+            wheel_path,
+            &self.plan.module_name,
+            &extension_module.unwrap_or_default().to_string_lossy(),
+            &shared_library
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+        )
     }
 
     fn new_wheel(
@@ -322,6 +342,56 @@ impl<'a> PythonWheelBuilder<'a> {
     }
 }
 
+/// Checks that the wheel has `<package>/<extension_module>.*.so` (or `.pyd`) and
+/// `<package>/<shared_library>`.
+fn verify_wheel_contents(
+    wheel_path: &Path,
+    package: &str,
+    extension_module: &str,
+    shared_library: &str,
+) -> Result<()> {
+    let archive = std::fs::File::open(wheel_path)
+        .map_err(|source| CliError::ReadFailed {
+            path: wheel_path.to_path_buf(),
+            source,
+        })
+        .and_then(|file| {
+            zip::ZipArchive::new(file).map_err(|source| CliError::CommandFailed {
+                command: format!("failed to read wheel '{}': {source}", wheel_path.display()),
+                status: None,
+            })
+        })?;
+
+    let extension_prefix = format!("{package}/{extension_module}.");
+    let has_extension = archive.file_names().any(|name| {
+        name.starts_with(&extension_prefix) && (name.ends_with(".so") || name.ends_with(".pyd"))
+    });
+    let shared_library_entry = format!("{package}/{shared_library}");
+    let has_shared_library = archive
+        .file_names()
+        .any(|name| name == shared_library_entry);
+
+    let missing = [
+        (!has_extension).then(|| format!("the compiled {package}.{extension_module} extension")),
+        (!has_shared_library).then_some(shared_library_entry),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+
+    missing
+        .is_empty()
+        .then_some(())
+        .ok_or_else(|| CliError::CommandFailed {
+            command: format!(
+                "python wheel '{}' is missing {}",
+                wheel_path.display(),
+                missing.join(" and ")
+            ),
+            status: None,
+        })
+}
+
 fn resolve_interpreter_executable(command: &str) -> Result<PathBuf> {
     let command_path = Path::new(command);
 
@@ -357,7 +427,9 @@ fn absolutize_interpreter_path(path: &Path) -> PathBuf {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{PythonInterpreter, PythonInterpreterIdentity, PythonWheelBuilder};
+    use super::{
+        PythonInterpreter, PythonInterpreterIdentity, PythonWheelBuilder, verify_wheel_contents,
+    };
     use crate::cli::CliError;
     use crate::pack::python::runtime::PythonRuntimeVersion;
 
@@ -375,6 +447,63 @@ mod tests {
                 if command.contains("requires Python >= 3.10")
                     && command.contains("interpreter 'python3.9'")
                     && command.contains("resolved to Python 3.9")
+        ));
+    }
+
+    fn write_wheel(directory: &std::path::Path, entries: &[&str]) -> PathBuf {
+        let wheel_path = directory.join("demo-0.1.0-cp313-cp313-linux_x86_64.whl");
+        let mut writer =
+            zip::ZipWriter::new(std::fs::File::create(&wheel_path).expect("create wheel"));
+        entries.iter().for_each(|entry| {
+            writer
+                .start_file(*entry, zip::write::SimpleFileOptions::default())
+                .expect("start wheel entry");
+        });
+        writer.finish().expect("finish wheel");
+        wheel_path
+    }
+
+    #[test]
+    fn accepts_wheel_with_extension_and_shared_library() {
+        let directory = tempfile::tempdir().expect("create wheel directory");
+
+        [
+            "demo_ffi/_native.cpython-313-x86_64-linux-gnu.so",
+            "demo_ffi/_native.cp313-win_amd64.pyd",
+        ]
+        .into_iter()
+        .for_each(|extension| {
+            let wheel_path = write_wheel(
+                directory.path(),
+                &["demo_ffi/__init__.py", extension, "demo_ffi/libdemo_ffi.so"],
+            );
+
+            verify_wheel_contents(&wheel_path, "demo_ffi", "_native", "libdemo_ffi.so")
+                .expect("expected complete wheel");
+        });
+    }
+
+    #[test]
+    fn rejects_wheel_without_extension_or_shared_library() {
+        let directory = tempfile::tempdir().expect("create wheel directory");
+        let wheel_path = write_wheel(
+            directory.path(),
+            &[
+                "demo_ffi/__init__.py",
+                "demo_ffi/_native.c",
+                "other/_native.cpython-313-x86_64-linux-gnu.so",
+                "other/libdemo_ffi.so",
+            ],
+        );
+
+        let error = verify_wheel_contents(&wheel_path, "demo_ffi", "_native", "libdemo_ffi.so")
+            .expect_err("expected incomplete wheel rejection");
+
+        assert!(matches!(
+            error,
+            CliError::CommandFailed { command, status: None }
+                if command.contains("missing the compiled demo_ffi._native extension")
+                    && command.contains("and demo_ffi/libdemo_ffi.so")
         ));
     }
 
