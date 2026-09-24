@@ -694,6 +694,41 @@ boltffi passes the features explicitly instead, reading them from your own cargo
 build so anything you enable through `RUSTFLAGS`, `.cargo/config.toml` or a
 pinned toolchain is included. Stripping in release needs no extra configuration.
 
+### Randomness
+
+`getrandom`, which `rand`, `uuid`'s `v4` and most other crates draw entropy
+from, has no default backend on `wasm32-unknown-unknown`, and its `wasm_js`
+backend needs `wasm-bindgen`'s generated glue, which a BoltFFI package does not
+have. BoltFFI provides the entropy instead: `@boltffi/runtime` fills wasm memory
+straight from `crypto.getRandomValues`, and the `getrandom` feature connects
+`getrandom` 0.4 to it.
+
+Enable the feature and install the backend once, in the crate you pack:
+
+```toml
+[dependencies]
+boltffi = { version = "...", features = ["getrandom"] }
+```
+
+```rust
+boltffi::wasm_getrandom_backend!();
+```
+
+Then select `getrandom`'s custom backend for the wasm target, in the crate's
+`.cargo/config.toml`:
+
+```toml
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="custom"']
+```
+
+The macro expands to nothing on other targets, which keep their usual source.
+`getRandomValues` is available in browsers, workers and Node.js 19+; where it is
+missing, `getrandom` returns `Error::UNSUPPORTED` rather than trapping. Code that
+needs a lot of randomness should seed a userspace generator such as `rand`'s
+`StdRng` from `getrandom` once rather than calling it per value, as it would on
+any other platform.
+
 ### Using in a Bundler (Vite, webpack)
 
 Install the package and import directly:

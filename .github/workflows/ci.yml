@@ -79,7 +79,7 @@ jobs:
       # passing `--allow-undefined` on a wasm cdylib link between 1.95 and 1.97,
       # so a host import left undeclared resolves there and fails for everyone
       # building on current stable.
-      - run: cargo test -p boltffi_cli --test wasm_wake_link
+      - run: cargo test -p boltffi_cli --test wasm_wake_link --test wasm_getrandom
         env:
           RUSTUP_TOOLCHAIN: stable
 
