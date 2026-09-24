@@ -108,8 +108,8 @@ impl EncodedField {
         &self.ty
     }
 
-    pub fn comparison(&self) -> Comparison {
-        self.comparison
+    pub fn comparison(&self) -> &Comparison {
+        &self.comparison
     }
 
     pub(crate) fn requalified(mut self, ty: TypeName) -> Self {

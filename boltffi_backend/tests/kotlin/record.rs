@@ -30,6 +30,16 @@ fn kotlin_target_compares_array_fields_by_content() {
             "        override fun hashCode(): kotlin.Int = this.payload.contentHashCode()"
         )
     );
+    assert!(rendered.contains(
+        "this.pages[index].indices.all { index1 -> this.pages[index][index1].contentEquals(other.pages[index][index1]) }"
+    ));
+    assert!(rendered.contains(
+        "(this.maybeChunks?.let { left -> other.maybeChunks?.let { right -> left.size == right.size"
+    ));
+    assert!(rendered.contains("?: false } ?: (other.maybeChunks == null))"));
+    assert!(rendered.contains(
+        "this.named.entries.fold(0) { hash, entry -> hash + entry.key.hashCode().xor(entry.value.contentHashCode()) }"
+    ));
     assert!(!rendered.contains("if (other !is Label) return false"));
     assert!(!rendered.contains("if (other !is Named) return false"));
 

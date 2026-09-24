@@ -12,6 +12,19 @@ fun blob(ratio: Double = 0.5, weight: Float? = 1.5f) = Blob(
     weight,
 )
 
+fun nested() = Nested(
+    listOf(byteArrayOf(1), byteArrayOf(2, 3)),
+    listOf(listOf(byteArrayOf(4)), listOf(byteArrayOf(5), byteArrayOf(6))),
+    listOf(null, listOf(byteArrayOf(7))),
+    mapOf("a" to byteArrayOf(8), "b" to byteArrayOf(9)),
+    mapOf("c" to listOf(byteArrayOf(10))),
+)
+
+fun checkSame(left: Nested, right: Nested) {
+    check(left == right)
+    check(left.hashCode() == right.hashCode())
+}
+
 fun main() {
     check(blob() == blob())
     check(blob().hashCode() == blob().hashCode())
@@ -38,4 +51,21 @@ fun main() {
 
     check(BlobError("failed", byteArrayOf(1)) == BlobError("failed", byteArrayOf(1)))
     check(BlobError("failed", byteArrayOf(1)) != BlobError("failed", byteArrayOf(2)))
+
+    checkSame(nested(), nested())
+    checkSame(nested().copy(maybeChunks = null), nested().copy(maybeChunks = null))
+    checkSame(nested().copy(maybeNamed = null), nested().copy(maybeNamed = null))
+    check(nested() != nested().copy(maybeChunks = null))
+    check(nested().copy(maybeChunks = null) != nested())
+    check(nested() != nested().copy(maybeChunks = listOf(byteArrayOf(1), byteArrayOf(2, 4))))
+    check(nested() != nested().copy(pages = listOf(listOf(byteArrayOf(4)), listOf(byteArrayOf(5), byteArrayOf(7)))))
+    check(nested() != nested().copy(pages = listOf(listOf(byteArrayOf(4)), listOf(byteArrayOf(5)))))
+    check(nested() != nested().copy(sparse = listOf(listOf(), listOf(byteArrayOf(7)))))
+    check(nested() != nested().copy(sparse = listOf(null, listOf(byteArrayOf(8)))))
+    check(nested() != nested().copy(named = mapOf("a" to byteArrayOf(8), "b" to byteArrayOf(0))))
+    check(nested() != nested().copy(named = mapOf("a" to byteArrayOf(8), "c" to byteArrayOf(9))))
+    check(nested() != nested().copy(named = mapOf("a" to byteArrayOf(8))))
+    check(nested() != nested().copy(maybeNamed = null))
+    check(nested() != nested().copy(maybeNamed = mapOf("c" to listOf(byteArrayOf(11)))))
+    check(Nested.fromByteArray(nested().toByteArray()) == nested())
 }

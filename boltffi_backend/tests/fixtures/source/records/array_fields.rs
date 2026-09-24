@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 #[data]
 pub struct Blob {
     pub id: u32,
@@ -7,6 +9,15 @@ pub struct Blob {
     pub chunks: Vec<Vec<u8>>,
     pub ratio: f64,
     pub weight: Option<f32>,
+}
+
+#[data]
+pub struct Nested {
+    pub maybe_chunks: Option<Vec<Vec<u8>>>,
+    pub pages: Vec<Vec<Vec<u8>>>,
+    pub sparse: Vec<Option<Vec<Vec<u8>>>>,
+    pub named: HashMap<String, Vec<u8>>,
+    pub maybe_named: Option<HashMap<String, Vec<Vec<u8>>>>,
 }
 
 #[data]

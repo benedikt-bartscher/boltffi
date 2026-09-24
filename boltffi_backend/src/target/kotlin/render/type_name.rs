@@ -209,9 +209,11 @@ impl TypeRefRender for KotlinTypeRef<'_> {
     fn optional(&mut self, inner: Self::Output) -> Self::Output {
         inner.map(|inner| {
             ApiType::new(inner.ty.nullable()).compared(match inner.comparison {
-                Comparison::Array => Comparison::Array,
                 Comparison::Float { .. } => Comparison::Float { nullable: true },
-                _ => Comparison::Value,
+                comparison @ (Comparison::List(_) | Comparison::Map(_)) => {
+                    Comparison::Nullable(Box::new(comparison))
+                }
+                comparison => comparison,
             })
         })
     }
@@ -222,12 +224,8 @@ impl TypeRefRender for KotlinTypeRef<'_> {
             Some(primitive) => KotlinPrimitive::new(primitive)
                 .direct_vector_type()
                 .map(|ty| ApiType::new(ty).compared(Comparison::Array)),
-            None => Ok(ApiType::new(TypeName::list(element.ty)).compared(
-                match element.comparison {
-                    Comparison::Array => Comparison::ArrayList,
-                    _ => Comparison::Value,
-                },
-            )),
+            None => Ok(ApiType::new(TypeName::list(element.ty))
+                .compared(Comparison::container(element.comparison, Comparison::List))),
         }
     }
 
@@ -246,7 +244,9 @@ impl TypeRefRender for KotlinTypeRef<'_> {
     }
 
     fn map(&mut self, key: Self::Output, value: Self::Output) -> Self::Output {
-        Ok(ApiType::new(TypeName::map(key?.ty, value?.ty)))
+        let value = value?;
+        Ok(ApiType::new(TypeName::map(key?.ty, value.ty))
+            .compared(Comparison::container(value.comparison, Comparison::Map)))
     }
 }
 

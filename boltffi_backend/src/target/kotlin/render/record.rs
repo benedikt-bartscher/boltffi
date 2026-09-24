@@ -107,7 +107,7 @@ impl Record {
             record
                 .fields
                 .iter()
-                .map(|field| (&field.name, field.comparison)),
+                .map(|field| (&field.name, &field.comparison)),
         )?;
         Ok(record)
     }
@@ -605,7 +605,7 @@ impl Field {
         Ok(Self {
             documentation,
             ty: field.ty().clone(),
-            comparison: field.comparison(),
+            comparison: field.comparison().clone(),
             read: field.read().clone(),
             read_from_base: None,
             write: field.write().clone(),
