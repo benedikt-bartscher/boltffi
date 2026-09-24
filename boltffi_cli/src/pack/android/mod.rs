@@ -21,8 +21,8 @@ use crate::reporter::Reporter;
 use crate::target::{BuiltLibrary, Platform};
 
 use super::{
-    discover_built_libraries_for_targets, missing_built_libraries, print_cargo_line,
-    resolve_build_cargo_args,
+    discover_built_libraries_for_targets, missing_built_libraries, pack_generate_cargo_args,
+    print_cargo_line, resolve_build_cargo_args,
 };
 
 pub(crate) use self::link::{AndroidPackageLayout, AndroidPackager};
@@ -92,13 +92,17 @@ pub(crate) fn pack_android(
                 target: GenerateTarget::Kotlin,
                 output: Some(config.android_kotlin_output()),
                 experimental: false,
-                cargo_args: options.execution.cargo_args.clone(),
+                cargo_args: pack_generate_cargo_args(
+                    config,
+                    TargetSection::Android,
+                    &GenerateTarget::Kotlin,
+                    &options.execution.cargo_args,
+                ),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;
         step.finish_success();
 
-        // `generate header` adds no target's args, so pass Android's alongside the CLI ones.
         let step = reporter.step("Generating C header");
         run_generate_with_output(
             config,
@@ -106,13 +110,12 @@ pub(crate) fn pack_android(
                 target: GenerateTarget::Header,
                 output: Some(config.android_header_output()),
                 experimental: false,
-                cargo_args: config
-                    .targets
-                    .cargo_args(TargetSection::Android)
-                    .iter()
-                    .chain(&options.execution.cargo_args)
-                    .cloned()
-                    .collect(),
+                cargo_args: pack_generate_cargo_args(
+                    config,
+                    TargetSection::Android,
+                    &GenerateTarget::Header,
+                    &options.execution.cargo_args,
+                ),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;

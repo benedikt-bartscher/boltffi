@@ -82,7 +82,7 @@ impl RenderedJava {
 }
 
 /// Config args for `build` and `generate` (plus `section`'s), then the CLI `--cargo-arg`s.
-fn generation_cargo_args(
+pub(crate) fn generation_cargo_args(
     config: &Config,
     section: Option<TargetSection>,
     options: &GenerateOptions,

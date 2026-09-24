@@ -17,7 +17,7 @@ use crate::config::{Config, TargetSection, WasmOptimizeLevel, WasmOptimizeOnMiss
 use crate::pack::PackError;
 use crate::reporter::Reporter;
 
-use super::{print_cargo_line, resolve_build_cargo_args};
+use super::{pack_generate_cargo_args, print_cargo_line, resolve_build_cargo_args};
 
 use self::npm::{
     generate_wasm_loader_entrypoints, generate_wasm_package_json, generate_wasm_readme,
@@ -113,7 +113,12 @@ pub(crate) fn pack_wasm(
                 target: GenerateTarget::Typescript,
                 output: Some(config.wasm_typescript_output()),
                 experimental: false,
-                cargo_args: options.execution.cargo_args.clone(),
+                cargo_args: pack_generate_cargo_args(
+                    config,
+                    TargetSection::Wasm,
+                    &GenerateTarget::Typescript,
+                    &options.execution.cargo_args,
+                ),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;

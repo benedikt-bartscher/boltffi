@@ -79,6 +79,15 @@ Each `[targets.<name>]` table listed below also accepts `cargo_args` (array of s
 
 `generate all`, `build all`, `pack all`, and `release` apply each target's `cargo_args` to that target only.
 
+Some commands read a table other than the one their output suggests:
+
+- `generate header` reads no target table and uses only the `[cargo]` arguments. `pack android` passes `[targets.android].cargo_args` to its header step.
+- `generate kotlin` and `pack android` use `[targets.android]`.
+- `pack kmp` builds its Android libraries with `[targets.kotlin_multiplatform].cargo_args`, not `[targets.android]`.
+- `generate java` and `pack java` use `[targets.java]`, including for the Android output under `[targets.java.android]`.
+
+`cargo_args` is read only from the top-level tables above. Unknown keys in target tables are ignored, so `cargo_args` under a nested table such as `[targets.android.kotlin]` has no effect.
+
 Arguments are passed in this order: `global_args`, `command_args`, the target's `cargo_args`, then the CLI `--cargo-arg` values.
 
 ```toml

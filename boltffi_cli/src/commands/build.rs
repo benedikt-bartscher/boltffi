@@ -72,15 +72,7 @@ pub fn run_build(config: &Config, options: BuildCommandOptions) -> Result<Vec<Bu
             build_dart(config, release, &cargo_args)?
         }
         BuildPlatform::All => {
-            let shared_cargo_args = config
-                .cargo_args_for_command("build")
-                .into_iter()
-                .chain(cli_cargo_args.iter().cloned())
-                .collect::<Vec<_>>();
-            println!(
-                "Building all targets ({})...",
-                profile_for(&shared_cargo_args)
-            );
+            println!("Building all targets...");
             let mut all_results = Vec::new();
             if config.is_apple_enabled() {
                 all_results.extend(

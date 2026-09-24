@@ -16,7 +16,7 @@ use crate::{
         pack::PackCOptions,
     },
     config::{Config, TargetSection},
-    pack::{print_cargo_line, resolve_build_cargo_args},
+    pack::{pack_generate_cargo_args, print_cargo_line, resolve_build_cargo_args},
     reporter::Reporter,
     target::NativeHostPlatform,
 };
@@ -96,7 +96,12 @@ pub(crate) fn pack_c(config: &Config, options: PackCOptions, reporter: &Reporter
                 target: GenerateTarget::C,
                 output: Some(config.c_output()),
                 experimental: options.experimental,
-                cargo_args: options.execution.cargo_args.clone(),
+                cargo_args: pack_generate_cargo_args(
+                    config,
+                    TargetSection::C,
+                    &GenerateTarget::C,
+                    &options.execution.cargo_args,
+                ),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;

@@ -10,7 +10,7 @@ use crate::{
         pack::PackDartOptions,
     },
     config::{Config, TargetSection},
-    pack::{PackError, print_cargo_line, resolve_build_cargo_args},
+    pack::{PackError, pack_generate_cargo_args, print_cargo_line, resolve_build_cargo_args},
     reporter::Reporter,
 };
 
@@ -230,7 +230,12 @@ pub(crate) fn pack_dart(
                 target: GenerateTarget::Dart,
                 output: Some(config.dart_output()),
                 experimental: options.experimental,
-                cargo_args: options.execution.cargo_args.clone(),
+                cargo_args: pack_generate_cargo_args(
+                    config,
+                    TargetSection::Dart,
+                    &GenerateTarget::Dart,
+                    &options.execution.cargo_args,
+                ),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;

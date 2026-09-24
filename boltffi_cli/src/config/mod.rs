@@ -777,21 +777,6 @@ impl Config {
                 || self.is_experimental_enabled(&Experimental::WholeTarget(target)))
     }
 
-    pub fn cargo_args_for_command(&self, command_name: &str) -> Vec<String> {
-        self.cargo
-            .global_args
-            .iter()
-            .chain(
-                self.cargo
-                    .command_args
-                    .get(command_name)
-                    .into_iter()
-                    .flat_map(|args| args.iter()),
-            )
-            .cloned()
-            .collect()
-    }
-
     pub fn cargo_args_for_commands(&self, command_names: &[&str]) -> Vec<String> {
         self.cargo
             .global_args
@@ -2044,7 +2029,7 @@ build = ["--features", "mobile"]
         );
 
         assert_eq!(
-            config.cargo_args_for_command("build"),
+            config.cargo_args_for_commands(&["build"]),
             vec![
                 "--locked".to_string(),
                 "--features".to_string(),
@@ -2094,7 +2079,7 @@ global_args = ["--frozen"]
         );
 
         assert_eq!(
-            config.cargo_args_for_command("test"),
+            config.cargo_args_for_commands(&["test"]),
             vec!["--frozen".to_string()]
         );
     }

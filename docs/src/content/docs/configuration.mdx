@@ -68,6 +68,14 @@ cargo_args = ["--no-default-features", "--features=kotlin"]
 
 Arguments are passed in this order: `global_args`, `command_args`, the target's `cargo_args`, then any `--cargo-arg` values from the command line.
 
+Each command reads the `cargo_args` of one target table:
+
+- `generate kotlin` and `pack android` use `[targets.android]`. `generate header` uses only the `[cargo]` arguments, but the header step of `pack android` also gets `[targets.android].cargo_args`.
+- `pack kmp` builds its Android libraries with `[targets.kotlin_multiplatform].cargo_args`, not `[targets.android]`.
+- `generate java` and `pack java` use `[targets.java]`, including for the Android output.
+
+`cargo_args` is read only from top-level target tables such as `[targets.android]`. Unknown keys in target tables are ignored, so `cargo_args` under `[targets.android.kotlin]` has no effect.
+
 ## Apple Configuration
 
 The `[targets.apple]` section controls iOS, iOS Simulator, and optionally macOS builds.
