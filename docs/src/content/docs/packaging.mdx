@@ -835,7 +835,7 @@ The shared library filename changes per host.
 - Linux: `.so`
 - Windows: `.dll`
 
-setuptools' `build/` and `*.egg-info` directories are removed before each wheel build, so every wheel is built from the current sources. A wheel missing the compiled `_native` extension or the shared library fails the pack.
+setuptools' `build/` directory and the package's `.egg-info` are removed before each wheel build, so every wheel is built from the current sources; `targets.python.wheel.output` must therefore lie outside them. A wheel missing the compiled `_native` extension or the shared library fails the pack.
 
 ### Interpreter Selection
 

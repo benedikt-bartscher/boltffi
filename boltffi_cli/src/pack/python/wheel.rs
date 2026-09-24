@@ -10,6 +10,7 @@ use crate::pack::{format_command_for_log, print_verbose_detail};
 use crate::reporter::Step;
 
 use super::build::BuiltPythonSharedLibrary;
+use super::layout::NATIVE_EXTENSION_MODULE;
 use super::plan::{PythonInterpreterSelection, PythonPackagingPlan};
 use super::runtime::PythonRuntimeVersion;
 
@@ -202,8 +203,10 @@ impl<'a> PythonWheelBuilder<'a> {
         interpreter: &PythonInterpreter,
         verbose: bool,
     ) -> Result<PythonBuiltWheel> {
+        self.plan
+            .layout
+            .remove_setuptools_build_state(&self.plan.distribution_name)?;
         let existing_wheels = self.current_wheels()?;
-        self.plan.layout.remove_setuptools_build_state()?;
         let mut command = interpreter.wheel_command(
             &self.plan.layout.root_directory,
             &self.plan.layout.wheel_directory,
@@ -253,17 +256,14 @@ impl<'a> PythonWheelBuilder<'a> {
     /// `pip wheel` can succeed without the compiled bridge extension or the
     /// staged shared library in the wheel; fail the pack instead.
     fn verify_wheel_contents(&self, wheel_path: &Path) -> Result<()> {
-        let extension_module = self.plan.layout.native_bridge_source_path.file_stem();
-        let shared_library = self.plan.packaged_shared_library_path();
-
         verify_wheel_contents(
             wheel_path,
             &self.plan.module_name,
-            &extension_module.unwrap_or_default().to_string_lossy(),
-            &shared_library
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy(),
+            NATIVE_EXTENSION_MODULE,
+            &self
+                .plan
+                .host_platform
+                .shared_library_filename(&self.plan.cargo_context.artifact_name),
         )
     }
 
@@ -343,7 +343,8 @@ impl<'a> PythonWheelBuilder<'a> {
 }
 
 /// Checks that the wheel has `<package>/<extension_module>.*.so` (or `.pyd`) and
-/// `<package>/<shared_library>`.
+/// `<package>/<shared_library>`. A Windows debug interpreter names the extension
+/// `<extension_module>_d.*.pyd`, which is accepted too.
 fn verify_wheel_contents(
     wheel_path: &Path,
     package: &str,
@@ -363,8 +364,10 @@ fn verify_wheel_contents(
         })?;
 
     let extension_prefix = format!("{package}/{extension_module}.");
+    let debug_extension_prefix = format!("{package}/{extension_module}_d.");
     let has_extension = archive.file_names().any(|name| {
-        name.starts_with(&extension_prefix) && (name.ends_with(".so") || name.ends_with(".pyd"))
+        (name.starts_with(&extension_prefix) && (name.ends_with(".so") || name.ends_with(".pyd")))
+            || (name.starts_with(&debug_extension_prefix) && name.ends_with(".pyd"))
     });
     let shared_library_entry = format!("{package}/{shared_library}");
     let has_shared_library = archive
@@ -470,6 +473,8 @@ mod tests {
         [
             "demo_ffi/_native.cpython-313-x86_64-linux-gnu.so",
             "demo_ffi/_native.cp313-win_amd64.pyd",
+            "demo_ffi/_native_d.cp313-win_amd64.pyd",
+            "demo_ffi/_native_d.pyd",
         ]
         .into_iter()
         .for_each(|extension| {
@@ -491,6 +496,8 @@ mod tests {
             &[
                 "demo_ffi/__init__.py",
                 "demo_ffi/_native.c",
+                "demo_ffi/_native_d.cpython-313-x86_64-linux-gnu.so",
+                "demo_ffi/_native_debug.cp313-win_amd64.pyd",
                 "other/_native.cpython-313-x86_64-linux-gnu.so",
                 "other/libdemo_ffi.so",
             ],
