@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use boltffi_backend::{CustomTypeMapping, target::python::PackageModule};
@@ -245,6 +245,36 @@ impl Config {
                 "targets.python.module_name must be a valid Python identifier, got '{}'",
                 module_name
             )));
+        }
+
+        if self.is_python_enabled()
+            && let Some(python_requires) = self.targets.python.python_requires.as_deref()
+            && python_requires.trim().is_empty()
+        {
+            return Err(ConfigError::Validation(
+                "targets.python.python_requires must not be empty when provided".to_string(),
+            ));
+        }
+
+        if self.is_python_enabled() {
+            for (name, target) in &self.targets.python.scripts {
+                if name.is_empty()
+                    || name
+                        .contains(|character: char| character.is_whitespace() || character == '=')
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "targets.python.scripts has invalid script name '{}'",
+                        name
+                    )));
+                }
+
+                if target.trim().is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "targets.python.scripts.{} must name an entry point like 'package.module:function'",
+                        name
+                    )));
+                }
+            }
         }
 
         if self.is_csharp_enabled() {
@@ -900,6 +930,14 @@ impl Config {
             .module_name
             .clone()
             .unwrap_or_else(|| self.crate_artifact_name())
+    }
+
+    pub fn python_requires(&self) -> Option<String> {
+        self.targets.python.python_requires.clone()
+    }
+
+    pub fn python_scripts(&self) -> &BTreeMap<String, String> {
+        &self.targets.python.scripts
     }
 
     pub fn python_wheel_output(&self) -> PathBuf {
@@ -2410,6 +2448,120 @@ interpreters = ["python3.11", "python3.12"]
             config.python_wheel_interpreters(),
             Some(["python3.11".to_string(), "python3.12".to_string()].as_slice())
         );
+    }
+
+    #[test]
+    fn python_package_metadata_defaults_to_no_overrides() {
+        let config = parse_config(
+            r#"
+[package]
+name = "my-lib"
+
+[targets.python]
+enabled = true
+"#,
+        );
+
+        assert_eq!(config.python_requires(), None);
+        assert!(config.python_scripts().is_empty());
+    }
+
+    #[test]
+    fn python_package_metadata_supports_python_requires_and_scripts() {
+        let config = parse_config(
+            r#"
+[package]
+name = "my-lib"
+
+[targets.python]
+enabled = true
+python_requires = ">=3.14"
+
+[targets.python.scripts]
+my-lib = "my_lib.cli:main"
+my-lib-admin = "my_lib.admin:run"
+"#,
+        );
+
+        assert_eq!(config.python_requires().as_deref(), Some(">=3.14"));
+        assert_eq!(
+            config
+                .python_scripts()
+                .iter()
+                .map(|(name, target)| (name.as_str(), target.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("my-lib", "my_lib.cli:main"),
+                ("my-lib-admin", "my_lib.admin:run"),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_python_requires() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "my-lib"
+
+[targets.python]
+enabled = true
+python_requires = " "
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(matches!(
+            parsed.validate(),
+            Err(ConfigError::Validation(message))
+                if message.contains("targets.python.python_requires must not be empty")
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_python_script_name() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "my-lib"
+
+[targets.python]
+enabled = true
+
+[targets.python.scripts]
+"my lib" = "my_lib.cli:main"
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(matches!(
+            parsed.validate(),
+            Err(ConfigError::Validation(message))
+                if message.contains("targets.python.scripts has invalid script name 'my lib'")
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_python_script_target() {
+        let parsed: Config = toml::from_str(
+            r#"
+[package]
+name = "my-lib"
+
+[targets.python]
+enabled = true
+
+[targets.python.scripts]
+my-lib = ""
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert!(matches!(
+            parsed.validate(),
+            Err(ConfigError::Validation(message))
+                if message.contains("targets.python.scripts.my-lib must name an entry point")
+        ));
     }
 
     #[test]
