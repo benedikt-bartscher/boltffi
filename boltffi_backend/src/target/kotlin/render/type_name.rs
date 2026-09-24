@@ -14,7 +14,7 @@ use crate::{
         primitive::KotlinPrimitive,
         render::{
             callback::CallbackHandle, class::ClassHandle, direct_vector::DirectVector,
-            enumeration::Enumeration, record::Record,
+            enumeration::Enumeration, equality::Comparison, record::Record,
         },
         syntax::TypeName,
         tuple::Arity,
@@ -89,6 +89,11 @@ impl KotlinType {
             .map(ApiType::into_type)
     }
 
+    pub fn comparison(ty: &TypeRef, context: &RenderContext<Native>) -> Result<Comparison> {
+        ty.render_with(&mut KotlinTypeRef::new(context))
+            .map(|ty| ty.comparison)
+    }
+
     pub fn type_ref_with_package(
         ty: &TypeRef,
         context: &RenderContext<Native>,
@@ -114,6 +119,7 @@ struct KotlinTypeRef<'context> {
 struct ApiType {
     ty: TypeName,
     primitive: Option<Primitive>,
+    comparison: Comparison,
 }
 
 impl<'context> KotlinTypeRef<'context> {
@@ -143,6 +149,10 @@ impl TypeRefRender for KotlinTypeRef<'_> {
         KotlinType::primitive(primitive).map(|ty| ApiType {
             ty,
             primitive: Some(primitive),
+            comparison: match primitive {
+                Primitive::F32 | Primitive::F64 => Comparison::Float { nullable: false },
+                _ => Comparison::Value,
+            },
         })
     }
 
@@ -159,7 +169,7 @@ impl TypeRefRender for KotlinTypeRef<'_> {
     }
 
     fn bytes(&mut self) -> Self::Output {
-        Ok(ApiType::new(TypeName::byte_array(false)))
+        Ok(ApiType::new(TypeName::byte_array(false)).compared(Comparison::Array))
     }
 
     fn record(&mut self, id: RecordId) -> Self::Output {
@@ -189,7 +199,7 @@ impl TypeRefRender for KotlinTypeRef<'_> {
             .map(|custom_type| custom_type.representation())
             .ok_or(KotlinHost::unsupported("custom type without declaration"))?
             .render_with(self)
-            .map(|inner| ApiType::new(inner.ty))
+            .map(|inner| ApiType::new(inner.ty).compared(inner.comparison))
     }
 
     fn builtin(&mut self, kind: BuiltinType) -> Self::Output {
@@ -197,7 +207,13 @@ impl TypeRefRender for KotlinTypeRef<'_> {
     }
 
     fn optional(&mut self, inner: Self::Output) -> Self::Output {
-        inner.map(|inner| ApiType::new(inner.ty.nullable()))
+        inner.map(|inner| {
+            ApiType::new(inner.ty.nullable()).compared(match inner.comparison {
+                Comparison::Array => Comparison::Array,
+                Comparison::Float { .. } => Comparison::Float { nullable: true },
+                _ => Comparison::Value,
+            })
+        })
     }
 
     fn sequence(&mut self, element: Self::Output) -> Self::Output {
@@ -205,8 +221,13 @@ impl TypeRefRender for KotlinTypeRef<'_> {
         match element.primitive {
             Some(primitive) => KotlinPrimitive::new(primitive)
                 .direct_vector_type()
-                .map(ApiType::new),
-            None => Ok(ApiType::new(TypeName::list(element.ty))),
+                .map(|ty| ApiType::new(ty).compared(Comparison::Array)),
+            None => Ok(ApiType::new(TypeName::list(element.ty)).compared(
+                match element.comparison {
+                    Comparison::Array => Comparison::ArrayList,
+                    _ => Comparison::Value,
+                },
+            )),
         }
     }
 
@@ -234,7 +255,13 @@ impl ApiType {
         Self {
             ty,
             primitive: None,
+            comparison: Comparison::Value,
         }
+    }
+
+    fn compared(mut self, comparison: Comparison) -> Self {
+        self.comparison = comparison;
+        self
     }
 
     fn into_type(self) -> TypeName {

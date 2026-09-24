@@ -1,0 +1,290 @@
+---
+source: boltffi_backend/tests/kotlin/record.rs
+expression: rendered
+---
+===== com/boltffi/demo/Demo.kt =====
+@file:OptIn(kotlin.ExperimentalUnsignedTypes::class)
+
+package com.boltffi.demo
+@Suppress("FunctionName")
+private object Native {
+    @JvmStatic external fun boltffi_function_demo_fail_blob(): Unit
+}
+
+
+data class Blob(
+    val id: UInt,
+    val payload: ByteArray,
+    val samples: UIntArray,
+    val checksum: ByteArray?,
+    val chunks: List<ByteArray>,
+    val ratio: Double,
+    val weight: Float?
+) {
+    internal fun wireSize(): Int {
+        return 4 + 4 + this.payload.size + 4 + this.samples.size * 4 + 1 + (this.checksum?.let { __boltffi_value_0 -> 4 + __boltffi_value_0.size } ?: 0) + 4 + this.chunks.sumOf { __boltffi_value_0 -> val __boltffi_size: kotlin.Int = 4 + __boltffi_value_0.size; __boltffi_size } + 8 + 1 + (this.weight?.let { __boltffi_value_0 -> 4 } ?: 0)
+    }
+
+    internal fun writeTo(writer: WireWriter) {
+        writer.writeU32(this.id)
+        writer.writeBytes(this.payload)
+        writer.writeUIntArray(this.samples)
+        writer.writeOptionalValue(this.checksum, { writer, __boltffi_value_0 -> writer.writeBytes(__boltffi_value_0) })
+        writer.writeSequence(this.chunks, this.chunks.size, { writer, __boltffi_value_0 -> writer.writeBytes(__boltffi_value_0) })
+        writer.writeF64(this.ratio)
+        writer.writeOptionalValue(this.weight, { writer, __boltffi_value_0 -> writer.writeF32(__boltffi_value_0) })
+    }
+
+    internal fun toByteArray(): ByteArray {
+        val buffer = WireWriterPool.acquire(wireSize())
+        val writer = buffer.writer
+        try {
+            writeTo(writer)
+            return buffer.bytes()
+        } finally {
+            buffer.close()
+        }
+    }
+
+    companion object {
+        internal fun fromReader(reader: WireReader): Blob {
+            return Blob(
+                reader.readU32(),
+                reader.readBytes(),
+                reader.readUIntArray(),
+                reader.readOptionalValue({ reader -> reader.readBytes() }),
+                reader.readSequence({ reader -> reader.readBytes() }),
+                reader.readF64(),
+                reader.readOptionalValue({ reader -> reader.readF32() })
+            )
+        }
+
+        internal fun fromByteArray(bytes: ByteArray): Blob {
+            val reader = WireReader(bytes)
+            return fromReader(reader)
+        }
+    }
+
+    override fun equals(other: kotlin.Any?): kotlin.Boolean {
+        if (this === other) return true
+        if (other !is Blob) return false
+        return this.id == other.id &&
+            this.payload.contentEquals(other.payload) &&
+            this.samples.contentEquals(other.samples) &&
+            this.checksum.contentEquals(other.checksum) &&
+            this.chunks.size == other.chunks.size && this.chunks.indices.all { index -> this.chunks[index].contentEquals(other.chunks[index]) } &&
+            this.ratio.equals(other.ratio) &&
+            this.weight?.equals(other.weight) ?: (other.weight == null)
+    }
+
+    override fun hashCode(): kotlin.Int {
+        var result = this.id.hashCode()
+        result = 31 * result + this.payload.contentHashCode()
+        result = 31 * result + this.samples.contentHashCode()
+        result = 31 * result + this.checksum.contentHashCode()
+        result = 31 * result + this.chunks.fold(1) { hash, element -> 31 * hash + element.contentHashCode() }
+        result = 31 * result + this.ratio.hashCode()
+        result = 31 * result + this.weight.hashCode()
+        return result
+    }
+}
+
+
+data class Label(
+    val name: String
+) {
+    internal fun wireSize(): Int {
+        return 4 + Utf8Codec.maxBytes(this.name)
+    }
+
+    internal fun writeTo(writer: WireWriter) {
+        writer.writeString(this.name)
+    }
+
+    internal fun toByteArray(): ByteArray {
+        val buffer = WireWriterPool.acquire(wireSize())
+        val writer = buffer.writer
+        try {
+            writeTo(writer)
+            return buffer.bytes()
+        } finally {
+            buffer.close()
+        }
+    }
+
+    companion object {
+        internal fun fromReader(reader: WireReader): Label {
+            return Label(
+                reader.readString()
+            )
+        }
+
+        internal fun fromByteArray(bytes: ByteArray): Label {
+            val reader = WireReader(bytes)
+            return fromReader(reader)
+        }
+    }
+}
+
+
+data class BlobError(
+    override val message: String,
+    val payload: ByteArray
+) : Exception(message) {
+    internal fun wireSize(): Int {
+        return 4 + Utf8Codec.maxBytes(this.message) + 4 + this.payload.size
+    }
+
+    internal fun writeTo(writer: WireWriter) {
+        writer.writeString(this.message)
+        writer.writeBytes(this.payload)
+    }
+
+    internal fun toByteArray(): ByteArray {
+        val buffer = WireWriterPool.acquire(wireSize())
+        val writer = buffer.writer
+        try {
+            writeTo(writer)
+            return buffer.bytes()
+        } finally {
+            buffer.close()
+        }
+    }
+
+    companion object {
+        internal fun fromReader(reader: WireReader): BlobError {
+            return BlobError(
+                reader.readString(),
+                reader.readBytes()
+            )
+        }
+
+        internal fun fromByteArray(bytes: ByteArray): BlobError {
+            val reader = WireReader(bytes)
+            return fromReader(reader)
+        }
+    }
+
+    override fun equals(other: kotlin.Any?): kotlin.Boolean {
+        if (this === other) return true
+        if (other !is BlobError) return false
+        return this.message == other.message &&
+            this.payload.contentEquals(other.payload)
+    }
+
+    override fun hashCode(): kotlin.Int {
+        var result = this.message.hashCode()
+        result = 31 * result + this.payload.contentHashCode()
+        return result
+    }
+}
+
+
+sealed class Frame {
+    internal abstract fun wireSize(): Int
+
+    internal abstract fun writeTo(writer: WireWriter)
+
+    internal fun toByteArray(): ByteArray {
+        val buffer = WireWriterPool.acquire(wireSize())
+        val writer = buffer.writer
+        try {
+            writeTo(writer)
+            return buffer.bytes()
+        } finally {
+            buffer.close()
+        }
+    }
+
+
+    object Empty : Frame() {
+        internal override fun wireSize(): Int {
+            return 4
+        }
+
+        internal override fun writeTo(writer: WireWriter) {
+            writer.writeU32(0.toUInt())
+        }
+    }
+    data class Data(
+        val payload: ByteArray
+    ) : Frame() {
+        internal override fun wireSize(): Int {
+            return 4 + 4 + this.payload.size
+        }
+
+        internal override fun writeTo(writer: WireWriter) {
+            writer.writeU32(1.toUInt())
+            writer.writeBytes(this.payload)
+        }
+
+        override fun equals(other: kotlin.Any?): kotlin.Boolean {
+            if (this === other) return true
+            if (other !is Data) return false
+            return this.payload.contentEquals(other.payload)
+        }
+
+        override fun hashCode(): kotlin.Int = this.payload.contentHashCode()
+    }
+    data class Tagged(
+        val field0: UInt,
+        val field1: LongArray
+    ) : Frame() {
+        internal override fun wireSize(): Int {
+            return 4 + 4 + 4 + this.field1.size * 8
+        }
+
+        internal override fun writeTo(writer: WireWriter) {
+            writer.writeU32(2.toUInt())
+            writer.writeU32(this.field0)
+            writer.writeLongArray(this.field1)
+        }
+
+        override fun equals(other: kotlin.Any?): kotlin.Boolean {
+            if (this === other) return true
+            if (other !is Tagged) return false
+            return this.field0 == other.field0 &&
+                this.field1.contentEquals(other.field1)
+        }
+
+        override fun hashCode(): kotlin.Int {
+            var result = this.field0.hashCode()
+            result = 31 * result + this.field1.contentHashCode()
+            return result
+        }
+    }
+    data class Named(
+        val name: String
+    ) : Frame() {
+        internal override fun wireSize(): Int {
+            return 4 + 4 + Utf8Codec.maxBytes(this.name)
+        }
+
+        internal override fun writeTo(writer: WireWriter) {
+            writer.writeU32(3.toUInt())
+            writer.writeString(this.name)
+        }
+    }
+
+    companion object {
+        internal fun fromReader(reader: WireReader): Frame {
+            val tag = reader.readU32()
+            return when (tag) {
+                0.toUInt() -> Empty
+                1.toUInt() -> Data(reader.readBytes())
+                2.toUInt() -> Tagged(reader.readU32(), reader.readLongArray())
+                3.toUInt() -> Named(reader.readString())
+                else -> throw IllegalArgumentException("unknown Frame tag: $tag")
+            }
+        }
+
+        internal fun fromByteArray(bytes: ByteArray): Frame {
+            val reader = WireReader(bytes)
+            return fromReader(reader)
+        }
+    }
+}
+
+fun failBlob() {
+    try { Native.boltffi_function_demo_fail_blob() } catch (__boltffi_error: BoltFfiErrorBufferException) { run { val __boltffi_error_reader = WireReader(__boltffi_error.bytes); throw BlobError.fromReader(__boltffi_error_reader) } }
+}
