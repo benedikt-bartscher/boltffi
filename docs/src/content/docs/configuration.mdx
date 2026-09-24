@@ -742,7 +742,7 @@ import demo_runtime
 
 ### Package Metadata
 
-The generated `setup.py` declares `python_requires=">=3.10"` by default. Raise it when your package needs a newer Python.
+The generated `setup.py` declares `python_requires=">=3.10"` by default. Raise it when your package needs a newer Python. The value is written verbatim as a PEP 440 version specifier; pip validates it when the package is built or installed.
 
 ```toml
 [targets.python]
@@ -750,7 +750,7 @@ enabled = true
 python_requires = ">=3.12"
 ```
 
-Declare console scripts under `[targets.python.scripts]`. Each key is the command name and each value is an entry point in `module:function` form.
+Declare console scripts under `[targets.python.scripts]`. Each key is the command name, made of ASCII letters, digits, `.`, `_` and `-`. Each value is an entry point in `module:function` form; both sides may be dotted, as in `demo_runtime.cli:App.main`.
 
 ```toml
 [targets.python.scripts]

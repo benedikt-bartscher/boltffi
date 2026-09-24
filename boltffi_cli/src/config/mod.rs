@@ -258,20 +258,17 @@ impl Config {
 
         if self.is_python_enabled() {
             for (name, target) in &self.targets.python.scripts {
-                if name.is_empty()
-                    || name
-                        .contains(|character: char| character.is_whitespace() || character == '=')
-                {
+                if !is_console_script_name(name) {
                     return Err(ConfigError::Validation(format!(
-                        "targets.python.scripts has invalid script name '{}'",
+                        "targets.python.scripts has invalid script name '{}'; names must start with an ASCII letter or digit and contain only ASCII letters, digits, '.', '_' or '-'",
                         name
                     )));
                 }
 
-                if target.trim().is_empty() {
+                if !is_console_script_target(target) {
                     return Err(ConfigError::Validation(format!(
-                        "targets.python.scripts.{} must name an entry point like 'package.module:function'",
-                        name
+                        "targets.python.scripts.{} must name an entry point like 'package.module:function', got '{}'",
+                        name, target
                     )));
                 }
             }
@@ -1196,6 +1193,27 @@ impl Config {
     pub fn dart_targets(&self) -> Vec<RustTarget> {
         self.dart_native_targets().to_vec()
     }
+}
+
+/// Accepts console script names matching `[A-Za-z0-9][A-Za-z0-9._-]*`.
+fn is_console_script_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
+}
+
+/// Accepts entry point object references of the form `module(.module)*:attr(.attr)*`.
+fn is_console_script_target(target: &str) -> bool {
+    let dotted_identifiers = |path: &str| {
+        path.split('.')
+            .all(|segment| PackageModule::parse(segment).is_ok())
+    };
+    target.split_once(':').is_some_and(|(module, attribute)| {
+        dotted_identifiers(module) && dotted_identifiers(attribute)
+    })
 }
 
 fn normalize_module_name(input: &str) -> String {
@@ -2518,50 +2536,104 @@ python_requires = " "
         ));
     }
 
-    #[test]
-    fn rejects_invalid_python_script_name() {
-        let parsed: Config = toml::from_str(
+    fn python_script_config(enabled: bool, name: &str, target: &str) -> Config {
+        toml::from_str(&format!(
             r#"
 [package]
 name = "my-lib"
 
 [targets.python]
-enabled = true
+enabled = {enabled}
 
 [targets.python.scripts]
-"my lib" = "my_lib.cli:main"
-"#,
-        )
-        .expect("toml parse failed");
-
-        assert!(matches!(
-            parsed.validate(),
-            Err(ConfigError::Validation(message))
-                if message.contains("targets.python.scripts has invalid script name 'my lib'")
-        ));
+"{name}" = "{target}"
+"#
+        ))
+        .expect("toml parse failed")
     }
 
     #[test]
-    fn rejects_empty_python_script_target() {
-        let parsed: Config = toml::from_str(
-            r#"
-[package]
-name = "my-lib"
+    fn rejects_invalid_python_script_names() {
+        for name in [
+            "",
+            "my lib",
+            "my=lib",
+            "-my-lib",
+            ".my-lib",
+            "my:lib",
+            "my/lib",
+            "mylib\u{e9}",
+        ] {
+            let result = python_script_config(true, name, "my_lib.cli:main").validate();
 
-[targets.python]
-enabled = true
+            assert!(
+                matches!(
+                    &result,
+                    Err(ConfigError::Validation(message))
+                        if message.contains(&format!("targets.python.scripts has invalid script name '{name}'"))
+                ),
+                "script name {name:?} should be rejected, got {result:?}"
+            );
+        }
+    }
 
-[targets.python.scripts]
-my-lib = ""
-"#,
-        )
-        .expect("toml parse failed");
+    #[test]
+    fn rejects_invalid_python_script_targets() {
+        for target in [
+            "",
+            " ",
+            "my_lib",
+            "my_lib:",
+            ":main",
+            "foo bar",
+            "my_lib.cli:main extra",
+            "a:b:c",
+            "my_lib..cli:main",
+            ".my_lib:main",
+            "my_lib.cli:main.",
+            "my-lib.cli:main",
+            "1my_lib:main",
+            "my_lib.class:main",
+            "my_lib.cli:main [extra]",
+        ] {
+            let result = python_script_config(true, "my-lib", target).validate();
 
-        assert!(matches!(
-            parsed.validate(),
-            Err(ConfigError::Validation(message))
-                if message.contains("targets.python.scripts.my-lib must name an entry point")
-        ));
+            assert!(
+                matches!(
+                    &result,
+                    Err(ConfigError::Validation(message))
+                        if message.contains("targets.python.scripts.my-lib must name an entry point")
+                ),
+                "script target {target:?} should be rejected, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_valid_python_script_names_and_targets() {
+        for (name, target) in [
+            ("my-lib", "my_lib:main"),
+            ("my_lib.admin", "my_lib.cli:main"),
+            ("2to3", "my_lib.tools.convert:Converter.run"),
+            ("MyLib", "_private.module:_entry"),
+        ] {
+            let result = python_script_config(true, name, target).validate();
+
+            assert!(
+                result.is_ok(),
+                "script {name:?} = {target:?} should be accepted, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn skips_python_script_validation_when_python_is_disabled() {
+        let result = python_script_config(false, "my lib", "a:b:c").validate();
+
+        assert!(
+            result.is_ok(),
+            "disabled Python target should not be validated, got {result:?}"
+        );
     }
 
     #[test]
