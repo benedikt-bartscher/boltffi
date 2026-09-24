@@ -43,6 +43,31 @@ crate = "my_lib"
 
 BoltFFI scans and builds the crate specified by `crate`, but uses `name` for all generated module names and paths.
 
+## Cargo Arguments
+
+The `[cargo]` section adds arguments to the `cargo` invocations BoltFFI runs. `global_args` apply to every invocation, and `command_args` apply per BoltFFI command:
+
+```toml
+[cargo]
+global_args = ["--locked"]
+
+[cargo.command_args]
+build = ["--profile", "ffi"]
+```
+
+When your crate gates bindings behind Cargo features, set `cargo_args` on a target table instead. Those arguments apply only where that target builds, for example `boltffi generate python` and `boltffi pack python`:
+
+```toml
+[targets.python]
+enabled = true
+cargo_args = ["--no-default-features", "--features=python"]
+
+[targets.android]
+cargo_args = ["--no-default-features", "--features=kotlin"]
+```
+
+Arguments are passed in this order: `global_args`, `command_args`, the target's `cargo_args`, then any `--cargo-arg` values from the command line.
+
 ## Apple Configuration
 
 The `[targets.apple]` section controls iOS, iOS Simulator, and optionally macOS builds.

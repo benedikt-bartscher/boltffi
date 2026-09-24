@@ -13,7 +13,7 @@ use crate::build::{
 use crate::cli::{CliError, Result};
 use crate::commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
 use crate::commands::pack::PackWasmOptions;
-use crate::config::{Config, WasmOptimizeLevel, WasmOptimizeOnMissing, WasmProfile};
+use crate::config::{Config, TargetSection, WasmOptimizeLevel, WasmOptimizeOnMissing, WasmProfile};
 use crate::pack::PackError;
 use crate::reporter::Reporter;
 
@@ -50,7 +50,8 @@ pub(crate) fn pack_wasm(
         config.wasm_profile()
     };
 
-    let build_cargo_args = resolve_build_cargo_args(config, &options.execution.cargo_args);
+    let build_cargo_args =
+        resolve_build_cargo_args(config, TargetSection::Wasm, &options.execution.cargo_args);
     let build_profile = crate::build::resolve_build_profile(
         matches!(requested_wasm_profile, WasmProfile::Release),
         &build_cargo_args,
@@ -112,7 +113,7 @@ pub(crate) fn pack_wasm(
                 target: GenerateTarget::Typescript,
                 output: Some(config.wasm_typescript_output()),
                 experimental: false,
-                cargo_args: build_cargo_args.clone(),
+                cargo_args: options.execution.cargo_args.clone(),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;

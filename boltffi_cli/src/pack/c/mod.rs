@@ -15,7 +15,7 @@ use crate::{
         generate::{GenerateOptions, GenerateTarget, run_generate_with_output},
         pack::PackCOptions,
     },
-    config::Config,
+    config::{Config, TargetSection},
     pack::{print_cargo_line, resolve_build_cargo_args},
     reporter::Reporter,
     target::NativeHostPlatform,
@@ -80,7 +80,8 @@ pub(crate) fn pack_c(config: &Config, options: PackCOptions, reporter: &Reporter
 
     reporter.section("🌐", "Packing C");
 
-    let build_cargo_args = resolve_build_cargo_args(config, &options.execution.cargo_args);
+    let build_cargo_args =
+        resolve_build_cargo_args(config, TargetSection::C, &options.execution.cargo_args);
     let cargo = Cargo::current(&build_cargo_args)?;
     ensure_c_pack_cargo_args_supported(&cargo)?;
     let build_profile = resolve_build_profile(options.execution.release, &build_cargo_args);
@@ -95,7 +96,7 @@ pub(crate) fn pack_c(config: &Config, options: PackCOptions, reporter: &Reporter
                 target: GenerateTarget::C,
                 output: Some(config.c_output()),
                 experimental: options.experimental,
-                cargo_args: build_cargo_args.clone(),
+                cargo_args: options.execution.cargo_args.clone(),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;

@@ -7,7 +7,7 @@ use crate::build::{
 use crate::cli::{CliError, Result};
 use crate::commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
 use crate::commands::pack::PackAndroidOptions;
-use crate::config::{Config, KotlinDesktopLoader};
+use crate::config::{Config, KotlinDesktopLoader, TargetSection};
 use crate::pack::PackError;
 use crate::pack::java::link::{
     JvmNativePackageLayout, build_jvm_native_library, compile_jni_library_with_layout,
@@ -49,7 +49,11 @@ pub(crate) fn pack_android(
 
     ensure_android_kotlin_desktop_no_build_supported(config, options.execution.no_build)?;
 
-    let build_cargo_args = resolve_build_cargo_args(config, &options.execution.cargo_args);
+    let build_cargo_args = resolve_build_cargo_args(
+        config,
+        TargetSection::Android,
+        &options.execution.cargo_args,
+    );
     let binding_expansion = (!options.execution.no_build)
         .then(|| BindingExpansion::resolve(config, &build_cargo_args))
         .transpose()?;
@@ -88,12 +92,13 @@ pub(crate) fn pack_android(
                 target: GenerateTarget::Kotlin,
                 output: Some(config.android_kotlin_output()),
                 experimental: false,
-                cargo_args: build_cargo_args.clone(),
+                cargo_args: options.execution.cargo_args.clone(),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;
         step.finish_success();
 
+        // `generate header` adds no target's args, so pass Android's alongside the CLI ones.
         let step = reporter.step("Generating C header");
         run_generate_with_output(
             config,
@@ -101,7 +106,13 @@ pub(crate) fn pack_android(
                 target: GenerateTarget::Header,
                 output: Some(config.android_header_output()),
                 experimental: false,
-                cargo_args: build_cargo_args.clone(),
+                cargo_args: config
+                    .targets
+                    .cargo_args(TargetSection::Android)
+                    .iter()
+                    .chain(&options.execution.cargo_args)
+                    .cloned()
+                    .collect(),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;

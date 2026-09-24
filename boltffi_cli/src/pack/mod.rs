@@ -16,7 +16,7 @@ use std::process::Command;
 use console::style;
 
 use crate::cli::{CliError, Result};
-use crate::config::Config;
+use crate::config::{Config, TargetSection};
 use crate::target::{BuiltLibrary, RustTarget};
 
 #[derive(Debug, thiserror::Error)]
@@ -43,9 +43,14 @@ pub enum PackError {
     BuildFailed { targets: Vec<String> },
 }
 
-pub(crate) fn resolve_build_cargo_args(config: &Config, cli_cargo_args: &[String]) -> Vec<String> {
+/// Build args from config for `section`, then the CLI `--cargo-arg`s.
+pub(crate) fn resolve_build_cargo_args(
+    config: &Config,
+    section: TargetSection,
+    cli_cargo_args: &[String],
+) -> Vec<String> {
     config
-        .cargo_args_for_command("build")
+        .cargo_args_for_target(section, &["build"])
         .into_iter()
         .chain(cli_cargo_args.iter().cloned())
         .collect()
@@ -167,8 +172,40 @@ fn parse_target_directory(metadata: &[u8]) -> Result<PathBuf> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::missing_built_libraries;
+    use super::{missing_built_libraries, resolve_build_cargo_args};
+    use crate::config::{Config, TargetSection};
     use crate::target::{BuiltLibrary, RustTarget};
+
+    #[test]
+    fn appends_cli_cargo_args_after_target_cargo_args() {
+        let config: Config = toml::from_str(
+            r#"
+[package]
+name = "mylib"
+
+[cargo]
+global_args = ["--locked"]
+
+[targets.android]
+cargo_args = ["--no-default-features", "--features=kotlin"]
+"#,
+        )
+        .expect("toml parse failed");
+
+        assert_eq!(
+            resolve_build_cargo_args(
+                &config,
+                TargetSection::Android,
+                &["--features=extra".to_string()]
+            ),
+            vec![
+                "--locked".to_string(),
+                "--no-default-features".to_string(),
+                "--features=kotlin".to_string(),
+                "--features=extra".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn reports_missing_built_libraries_for_unbuilt_configured_targets() {
