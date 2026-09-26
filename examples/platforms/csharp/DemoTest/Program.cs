@@ -23,6 +23,7 @@ public static class DemoTest
             TestI16();
             TestU16();
             TestI32();
+            TestGeneratedNameCollisions();
             TestU32();
             TestI64();
             TestU64();
@@ -52,6 +53,9 @@ public static class DemoTest
             TestOptionsWithVec();
             TestMultiCrateExports();
             TestClasses();
+            currentDemoCase = null;
+            await ClassOwnershipTests.Run();
+            CallbackClassHandleTests.Run();
             TestResultFunctions();
             TestResultClassMethods();
             TestResultEnumErrors();
@@ -81,6 +85,14 @@ public static class DemoTest
         Require(!EchoBool(false), "echoBool(false)");
         Require(!NegateBool(true), "negateBool(true)");
         Require(NegateBool(false), "case:primitives.scalars.bool.should_negate_false_to_true negateBool(false)");
+        Console.WriteLine("  PASS\n");
+    }
+
+    private static void TestGeneratedNameCollisions()
+    {
+        Console.WriteLine("Testing generated C# helper names...");
+        DemoCase("case:primitives.scalars.named_status.should_accept_both_names");
+        NotifyStatusCollision(7, 11);
         Console.WriteLine("  PASS\n");
     }
 
@@ -2458,6 +2470,35 @@ public static class DemoTest
     {
         Console.WriteLine("Testing result enum/record errors (typed exceptions)...");
 
+        DemoCase("case:results.error_enums.message.should_preserve_text");
+        Array.ForEach(new[] { "", "service failed 東京\0🦀" }, message =>
+        {
+            try
+            {
+                FailWithMessage(message);
+                Require(false, "expected ServiceError.Failed");
+            }
+            catch (ServiceErrorException error)
+            {
+                Require(error.Error is ServiceError.Failed failed && failed.Message == message,
+                    "error message payload");
+            }
+        });
+        DemoCase("case:results.error_enums.message.should_preserve_optional_text");
+        Array.ForEach(new[] { null, "", "optional failure 東京\0🦀" }, message =>
+        {
+            try
+            {
+                FailWithOptionalMessage(message);
+                Require(false, "expected ServiceError.Optional");
+            }
+            catch (ServiceErrorException error)
+            {
+                Require(error.Error is ServiceError.Optional optional && optional.Message == message,
+                    "nullable error message payload");
+            }
+        });
+
         // C-style #[error] enum -> dedicated MathErrorException with
         // an Error property that exposes the underlying enum value.
         DemoCase("case:results.error_enums.checked_divide.should_return_quotient");
@@ -2626,6 +2667,10 @@ public static class DemoTest
     private static async System.Threading.Tasks.Task TestAsyncFunctions()
     {
         Console.WriteLine("Testing async functions...");
+
+        DemoCase("case:async_fns.named_cancellation_token.should_preserve_both_values");
+        Require(await AsyncCancellationTokenCollision(7, 11) == 18,
+            "AsyncCancellationTokenCollision preserves both arguments");
 
         DemoCase("case:async_fns.basic.add.should_return_sum");
         Require(await AsyncAdd(3, 7) == 10, "AsyncAdd(3, 7)");
