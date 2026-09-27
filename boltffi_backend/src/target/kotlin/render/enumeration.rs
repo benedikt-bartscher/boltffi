@@ -18,6 +18,7 @@ use crate::{
             AssociatedConstants, Documentation,
             field::EncodedField,
             function::{ExportedCall, ExportedCallRenderer, ReceiverCarrier, ReceiverMutation},
+            signature::validate_exception_fields,
         },
         syntax::{ArgumentList, Expression, Identifier, Literal, Statement, TypeName},
     },
@@ -64,14 +65,14 @@ enum Body {
     },
 }
 
-const KOTLIN_SHADOWABLE_PRIMITIVES: &[&str] = &[
+const KOTLIN_SHADOWABLE_TYPES: &[&str] = &[
     "Boolean", "Byte", "UByte", "Short", "UShort", "Int", "UInt", "Long", "ULong", "Float",
-    "Double",
+    "Double", "String",
 ];
 
-fn shadowed_primitive_names(enum_name: &TypeName, variant_names: &[String]) -> Vec<String> {
+fn shadowed_type_names(enum_name: &TypeName, variant_names: &[String]) -> Vec<String> {
     let enum_name = enum_name.to_string();
-    KOTLIN_SHADOWABLE_PRIMITIVES
+    KOTLIN_SHADOWABLE_TYPES
         .iter()
         .filter(|primitive| {
             enum_name == **primitive || variant_names.iter().any(|variant| variant == *primitive)
@@ -134,6 +135,7 @@ pub struct DataVariant {
     documentation: Documentation,
     tag: Expression,
     fields: Vec<EncodedField>,
+    error_message: Option<Identifier>,
     read: Expression,
     size: Expression,
     tag_write: Statement,
@@ -536,7 +538,7 @@ impl Enumeration {
                     .map(|name| name.to_string())
             })
             .collect::<Result<Vec<_>>>()?;
-        let shadowed = shadowed_primitive_names(&name, &variant_names);
+        let shadowed = shadowed_type_names(&name, &variant_names);
         let wire_size_type = qualify_shadowed(TypeName::int(), &shadowed);
         let requalify = |calls: Vec<ExportedCall>| {
             calls
@@ -558,14 +560,28 @@ impl Enumeration {
                     .variants()
                     .iter()
                     .map(|variant| {
-                        DataVariant::from_declaration(
+                        let mut variant = DataVariant::from_declaration(
                             variant,
                             host,
                             context,
                             package,
                             &shadowed,
                             current.clone(),
-                        )
+                        )?;
+                        if error && !variant.transparent() {
+                            let scope = TypeName::qualified(
+                                &name,
+                                TypeName::new(variant.name().to_string()),
+                            );
+                            variant.error_message = validate_exception_fields(
+                                &scope,
+                                variant
+                                    .fields()
+                                    .iter()
+                                    .map(|field| (field.name(), field.ty())),
+                            )?;
+                        }
+                        Ok(variant)
                     })
                     .collect::<Result<Vec<_>>>()?,
                 wire_size_type,
@@ -770,6 +786,10 @@ impl DataVariant {
         &self.fields
     }
 
+    pub fn overrides_message(&self, name: &Identifier) -> bool {
+        self.error_message.as_ref() == Some(name)
+    }
+
     pub fn read(&self) -> &Expression {
         &self.read
     }
@@ -833,6 +853,7 @@ impl DataVariant {
             documentation: Documentation::new(variant.meta().doc()),
             tag,
             fields,
+            error_message: None,
             read,
             size,
             tag_write,
@@ -909,6 +930,7 @@ impl DataVariant {
             tag,
             fields,
             tag_write,
+            error_message: None,
             transparent: true,
         })
     }
