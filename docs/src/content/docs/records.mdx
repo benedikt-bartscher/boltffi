@@ -1053,7 +1053,8 @@ val setting: Setting = Mode.FAST
 
 In Python the `IntEnum` inherits the enum class (`class Mode(Setting,
 IntEnum)`), so `Mode.FAST` is a `Setting`, keeps its `int` semantics, and
-decodes back to the same member.
+decodes back to the same member. It never equals a member of another enum,
+though, even one of the same value: that is a different variant of the enum.
 
 Constraints, checked at generate time:
 

@@ -26,13 +26,21 @@ use boltffi_binding::{Bindings, Native, lower};
 /// each — the reason the tag cannot live on the payload. `Ping` is direct
 /// (one fixed-width primitive) and `Note` is encoded, so both payload lanes
 /// are covered, alongside a wrapped scalar variant and `Unset`. `Mode` is a
-/// C-style enum payload shared the same way, and reused by a wrapped variant.
+/// C-style enum payload shared the same way, and reused by a wrapped variant;
+/// `Level` is a second one with the same values, which `Slot` holds.
 const SOURCE: &str = r#"
 #[repr(i32)]
 #[data]
 pub enum Mode {
     Fast = 0,
     Slow = 1,
+}
+
+#[repr(i32)]
+#[data]
+pub enum Level {
+    Low = 0,
+    High = 1,
 }
 
 #[data]
@@ -56,6 +64,13 @@ pub enum Envelope {
     #[boltffi::transparent]
     Mode(Mode),
     Fallback(Mode),
+    #[boltffi::transparent]
+    Level(Level),
+}
+
+#[data]
+pub struct Slot {
+    envelope: Envelope,
 }
 
 #[data]
@@ -161,6 +176,17 @@ fallback = demo.EnvelopeFallback(slow)
 assert demo.Envelope._boltffi_wire_value(fallback) != demo.Envelope._boltffi_wire_value(slow)
 assert demo.Envelope._boltffi_from_wire(demo.Envelope._boltffi_wire_value(fallback)) == fallback
 assert pickle.loads(pickle.dumps(slow)) is slow
+# another enum's member of the same value is another variant, even in a record
+high = demo.Level.HIGH
+assert slow != high and not slow == high and slow == 1 and high == 1
+assert hash(slow) == hash(1) and len({slow: 0, high: 1}) == 2
+assert demo.Slot(envelope=slow) != demo.Slot(envelope=high)
+assert len({demo.Slot(envelope=slow), demo.Slot(envelope=high)}) == 2
+match demo.Slot(envelope=high):
+    case demo.Slot(envelope=demo.Mode.SLOW):
+        raise AssertionError("a value pattern matched another enum's member")
+    case demo.Slot(envelope=demo.Level.HIGH):
+        pass
 
 # inheriting python bases makes instances GC-tracked; the dealloc must untrack
 for _ in range(50_000):

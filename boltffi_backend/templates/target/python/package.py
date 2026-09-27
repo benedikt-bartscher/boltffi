@@ -622,6 +622,20 @@ class {{ enumeration.class_name }}({% for base in enumeration.bases %}{{ base }}
         {{ line }}
 {%- endfor %}
 {%- endfor %}
+{%- if !enumeration.bases.is_empty() %}
+
+    # another enum's member of the same value is another variant of the shared
+    # base, not an equal int; ints still compare by value
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, IntEnum) and type(other) is not type(self):
+            return False
+        return int.__eq__(self, other)
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    __hash__ = int.__hash__
+{%- endif %}
 
 {%- endif %}
 
