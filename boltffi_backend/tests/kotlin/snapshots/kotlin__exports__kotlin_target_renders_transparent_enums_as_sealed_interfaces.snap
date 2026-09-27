@@ -237,7 +237,7 @@ fun echoEnvelope(envelope: Envelope): Envelope {
 }
 
 fun echoEnvelopes(envelopes: List<Envelope>): List<Envelope> {
-    val __boltffi_envelopes_wire = WireWriterPool.acquire(4 + envelopes.sumOf { __boltffi_value_0 -> (Envelope.wireSize(__boltffi_value_0)).toInt() })
+    val __boltffi_envelopes_wire = WireWriterPool.acquire(4 + envelopes.sumOf { __boltffi_value_0 -> val __boltffi_size: kotlin.Int = Envelope.wireSize(__boltffi_value_0); __boltffi_size })
     val __boltffi_envelopes_writer = __boltffi_envelopes_wire.writer
     __boltffi_envelopes_writer.writeSequence(envelopes, envelopes.size, { __boltffi_envelopes_writer, __boltffi_value_0 -> Envelope.writeTo(__boltffi_value_0, __boltffi_envelopes_writer) })
     try {
