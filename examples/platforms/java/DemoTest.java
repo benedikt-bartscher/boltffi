@@ -16,6 +16,8 @@ public final class DemoTest {
     public static void main(String[] args) {
         try {
             System.out.println("Testing Java bindings...\n");
+            testClassOwnership();
+            testCallbackClassHandles();
             testBool();
             testI8();
             testU8();
@@ -72,6 +74,153 @@ public final class DemoTest {
         }
     }
 
+    private static final class MessageCollector implements MessageReceiver, FallibleMessageReceiver {
+        OwnedMessage first;
+        OwnedMessage second;
+        boolean fail;
+
+        public void attach(OwnedMessage handle, int callback) {
+            assert callback == 42;
+            assert handle.length() == 9;
+            first = handle;
+        }
+
+        public void optional(OwnedMessage handle) {
+            first = handle;
+        }
+
+        public int pair(OwnedMessage first, String label, OwnedMessage second) {
+            assert label.equals("pair");
+            this.first = first;
+            this.second = second;
+            if (fail) throw new MathError.Exception(MathError.NEGATIVE_INPUT);
+            return first.length() + (second == null ? 0 : second.length());
+        }
+    }
+
+    private static void testCallbackClassHandles() throws Exception {
+        try (MessageDrops drops = new MessageDrops()) {
+            MessageCollector receiver = new MessageCollector();
+            demoCase("case:callbacks.class_handles.should_retain_after_return");
+            Demo.deliverMessage(receiver, drops);
+            assert drops.count() == 0;
+            assert receiver.first.length() == 9;
+            receiver.first.close();
+            receiver.first.close();
+            assert drops.count() == 1;
+
+            demoCase("case:callbacks.class_handles.should_deliver_multiple_and_optional");
+            assert Demo.deliverMessagePair(receiver, drops, true) == 11;
+            assert drops.count() == 1;
+            assert receiver.first.length() == 5;
+            assert receiver.second.length() == 6;
+            receiver.first.close();
+            assert drops.count() == 2;
+            receiver.second.close();
+            assert drops.count() == 3;
+            assert Demo.deliverMessagePair(receiver, drops, false) == 5;
+            assert receiver.second == null;
+            receiver.first.close();
+            assert drops.count() == 4;
+
+            demoCase("case:callbacks.class_handles.should_retain_after_error");
+            receiver.fail = true;
+            try {
+                Demo.deliverMessagePair(receiver, drops, true);
+                throw new AssertionError("callback error was lost");
+            } catch (MathError.Exception error) {
+                assert error.getError() == MathError.NEGATIVE_INPUT;
+            }
+            assert drops.count() == 4;
+            assert receiver.first.length() == 5;
+            assert receiver.second.length() == 6;
+            receiver.first.close();
+            receiver.second.close();
+            assert drops.count() == 6;
+
+            demoCase("case:callbacks.class_handles.should_consume_in_rust_callback");
+            MessageReceiver measuring = Demo.makeMessageReceiver();
+            OwnedMessage moved = new OwnedMessage("moved", drops);
+            measuring.attach(moved, 42);
+            moved.close();
+            assert drops.count() == 7;
+            try {
+                moved.length();
+                throw new AssertionError("moved wrapper stayed usable");
+            } catch (IllegalStateException expected) {
+            }
+            OwnedMessage optional = new OwnedMessage("optional", drops);
+            measuring.optional(optional);
+            optional.close();
+            measuring.optional(null);
+            assert drops.count() == 8;
+            ((AutoCloseable) measuring).close();
+        }
+    }
+
+    private static void testClassOwnership() {
+        try (MessageDrops drops = new MessageDrops()) {
+            OwnedMessage message = new OwnedMessage("hello", drops);
+            assert Demo.consumeMessage(message) == 5;
+            message.close();
+            assert drops.count() == 1;
+            try {
+                message.length();
+                throw new AssertionError("moved wrapper stayed usable");
+            } catch (IllegalStateException expected) {
+            }
+            OwnedMessage rejected = new OwnedMessage("", drops);
+            try {
+                Demo.consumeMessageResult(rejected);
+                throw new AssertionError("missing Rust error");
+            } catch (RuntimeException expected) {
+            }
+            rejected.close();
+            assert drops.count() == 2;
+            OwnedMessage first = new OwnedMessage("first", drops);
+            try {
+                Demo.consumeMessages(first, rejected);
+                throw new AssertionError("accepted a closed argument");
+            } catch (IllegalStateException expected) {
+            }
+            first.close();
+            assert drops.count() == 3;
+            OwnedMessage duplicate = new OwnedMessage("duplicate", drops);
+            try {
+                Demo.consumeMessages(duplicate, duplicate);
+                throw new AssertionError("accepted duplicate ownership");
+            } catch (IllegalStateException expected) {
+            }
+            duplicate.close();
+            assert drops.count() == 4;
+            try (MessageStore store = new MessageStore()) {
+                OwnedMessage stored = new OwnedMessage("stored", drops);
+                store.set(stored, Collections.singletonMap("trace", "context")).join();
+                stored.close();
+                assert store.count() == 7;
+                assert drops.count() == 5;
+            }
+            OwnedMessage retained = new OwnedMessage("retained", drops);
+            CompletableFuture<?> pending = Demo.holdMessage(retained);
+            long deadline = System.nanoTime() + 5_000_000_000L;
+            while (drops.borrowCount() == 0 && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assert drops.borrowCount() == 1;
+            assert Demo.consumeMessage(retained) == 0;
+            retained.close();
+            assert drops.count() == 5;
+            assert pending.cancel(true);
+            while (drops.borrowCount() != 0 && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assert drops.borrowCount() == 0;
+            assert drops.count() == 6;
+            retained.close();
+            assert drops.count() == 6;
+        }
+    }
+
     private static void demoCase(String caseId) {
         currentDemoCase = caseId;
     }
@@ -110,6 +259,8 @@ public final class DemoTest {
         assert Demo.echoI32(42) == 42 : "echoI32(42)";
         assert Demo.echoI32(-100) == -100 : "case:primitives.scalars.i32.should_roundtrip_negative_value echoI32(-100)";
         assert Demo.addI32(10, 20) == 30 : "case:primitives.scalars.i32.should_add_two_values addI32(10, 20)";
+        demoCase("case:primitives.scalars.named_status.should_accept_both_names");
+        Demo.notifyStatusCollision(7, 11);
         assert Demo.add(7, 9) == 16 : "case:primitives.scalars.i32.should_add_with_benchmark_alias add(7, 9)";
         System.out.println("  PASS\n");
     }
@@ -2235,6 +2386,8 @@ public final class DemoTest {
             CompletableFuture<Integer> addFuture = Demo.asyncAdd(3, 7);
             demoCase("case:async_fns.basic.add.should_return_sum");
             assert addFuture.get() == 10 : "asyncAdd(3, 7)";
+            demoCase("case:async_fns.named_cancellation_token.should_preserve_both_values");
+            assert Demo.asyncCancellationTokenCollision(7, 11).get() == 18;
 
             CompletableFuture<String> echoFuture = Demo.asyncEcho("hello async");
             demoCase("case:async_fns.basic.echo.should_prefix_message");
@@ -2578,6 +2731,26 @@ public final class DemoTest {
 
     private static void testResultEnumErrors() {
         System.out.println("Testing result enum errors...");
+
+        demoCase("case:results.error_enums.message.should_preserve_text");
+        Arrays.asList("", "service failed 東京\u0000🦀").forEach(message -> {
+            try {
+                Demo.failWithMessage(message);
+                throw new AssertionError("expected ServiceError.Failed");
+            } catch (ServiceError.Failed error) {
+                assert message.equals(error.message) : "error message payload";
+            }
+        });
+        demoCase("case:results.error_enums.message.should_preserve_optional_text");
+        Arrays.asList(null, "", "optional failure 東京\u0000🦀").forEach(message -> {
+            Optional<String> optionalMessage = Optional.ofNullable(message);
+            try {
+                Demo.failWithOptionalMessage(optionalMessage);
+                throw new AssertionError("expected ServiceError.Optional");
+            } catch (ServiceError.Optional error) {
+                assert optionalMessage.equals(error.message) : "nullable error message payload";
+            }
+        });
 
         demoCase("case:results.error_enums.checked_divide.should_return_quotient");
         assert Demo.checkedDivide(10, 2) == 5 : "checkedDivide ok";

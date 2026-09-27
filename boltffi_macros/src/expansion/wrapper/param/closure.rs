@@ -6,7 +6,7 @@ use boltffi_binding::{
 };
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use syn::{Ident, Type};
+use syn::{Ident, LitStr, Type};
 
 use crate::expansion::{
     contract::Expansion,
@@ -135,8 +135,6 @@ impl<'expansion, 'lowered> Input<'expansion, 'lowered, Native> {
         let closure = closure_binding.native_binding(NativeBinding {
             ident: ident.clone(),
             callback: callback.clone(),
-            context: context.clone(),
-            release: release.clone(),
             owner: owner.clone(),
             rust_parameters: invoke_parameters.rust_parameters.clone(),
             body,
@@ -152,6 +150,20 @@ impl<'expansion, 'lowered> Input<'expansion, 'lowered, Native> {
             return_type.clone(),
         )?;
         let release_type = closure_binding.native_release_function_type();
+        let ownership = match self.closure.presence() {
+            HandlePresence::Nullable => quote! {
+                let #owner = #release.map(|release| {
+                    ::boltffi::__private::NativeCallbackOwner::new(#context, release)
+                });
+            },
+            _ => quote! {
+                let #owner = ::boltffi::__private::NativeCallbackOwner::new(#context, #release);
+            },
+        };
+        let (owned_values, conversions) = match self.closure {
+            ForeignClosure::Parameter(_) => (vec![ownership], vec![closure]),
+            ForeignClosure::Return(_) => (Vec::new(), vec![ownership, closure]),
+        };
 
         Ok(Tokens {
             items: Vec::new(),
@@ -165,7 +177,8 @@ impl<'expansion, 'lowered> Input<'expansion, 'lowered, Native> {
                 quote! { *mut ::core::ffi::c_void },
                 release_type,
             ],
-            conversions: vec![closure],
+            owned_values,
+            conversions,
             writebacks: Vec::new(),
             argument: quote! { #ident },
         })
@@ -218,6 +231,7 @@ impl<'expansion, 'lowered> Input<'expansion, 'lowered, Wasm32> {
         let registration = self.closure.registration().shape();
         let call = Ident::new(registration.call().name().as_str(), ident.span());
         let free = Ident::new(registration.free().name().as_str(), ident.span());
+        let import_module = LitStr::new(registration.call().module().as_str(), ident.span());
         let names = names::ClosureRegistration::new(ident);
         let owner = names.owner();
         let return_ffi_parameter_types = return_tokens.ffi_parameter_types();
@@ -233,7 +247,6 @@ impl<'expansion, 'lowered> Input<'expansion, 'lowered, Wasm32> {
         let closure = closure_binding.wasm_binding(
             ident,
             &owner,
-            &free,
             &invoke_parameters.rust_parameters,
             body,
             &self.failure,
@@ -254,17 +267,29 @@ impl<'expansion, 'lowered> Input<'expansion, 'lowered, Wasm32> {
             })
             .collect::<Vec<_>>();
 
+        let ownership = quote! {
+            let #owner = (#ident != 0).then(|| {
+                ::boltffi::__private::WasmCallbackOwner::new(#ident, #free)
+            });
+        };
+        let conversion = quote! {
+            #[link(wasm_import_module = #import_module)]
+            unsafe extern "C" {
+                fn #call(handle: u32 #(, #ffi_parameters)*) #return_type;
+                fn #free(handle: u32);
+            }
+            #closure
+        };
+        let (owned_values, conversions) = match self.closure {
+            ForeignClosure::Parameter(_) => (vec![ownership], vec![conversion]),
+            ForeignClosure::Return(_) => (Vec::new(), vec![ownership, conversion]),
+        };
         Ok(Tokens {
             items: Vec::new(),
             ffi_parameters: vec![quote! { #ident: u32 }],
             ffi_parameter_types: vec![quote! { u32 }],
-            conversions: vec![quote! {
-                unsafe extern "C" {
-                    fn #call(handle: u32 #(, #ffi_parameters)*) #return_type;
-                    fn #free(handle: u32);
-                }
-                #closure
-            }],
+            owned_values,
+            conversions,
             writebacks: Vec::new(),
             argument: quote! { #ident },
         })
@@ -1324,8 +1349,6 @@ impl ClosureBinding {
         let NativeBinding {
             ident,
             callback,
-            context,
-            release,
             owner,
             rust_parameters,
             body,
@@ -1333,21 +1356,18 @@ impl ClosureBinding {
         } = input;
         match self {
             Self::ImplTrait(_) => Ok(quote! {
-                let #owner = ::boltffi::__private::NativeCallbackOwner::new(#context, #release);
                 let #ident = move |#(#rust_parameters),*| {
                     #body
                 };
             }),
             Self::Boxed(_, ty) => Ok(quote! {
-                let #owner = ::boltffi::__private::NativeCallbackOwner::new(#context, #release);
                 let #ident: #ty = Box::new(move |#(#rust_parameters),*| {
                     #body
                 });
             }),
             Self::NullableBoxed(_, ty) => Ok(quote! {
-                let #ident: #ty = match (#callback, #release) {
-                    (Some(#callback), Some(#release)) => {
-                        let #owner = ::boltffi::__private::NativeCallbackOwner::new(#context, #release);
+                let #ident: #ty = match (#callback, #owner) {
+                    (Some(#callback), Some(#owner)) => {
                         Some(Box::new(move |#(#rust_parameters),*| {
                             #body
                         }) as _)
@@ -1366,41 +1386,33 @@ impl ClosureBinding {
         &self,
         ident: &Ident,
         owner: &Ident,
-        free: &Ident,
         rust_parameters: &[TokenStream],
         body: TokenStream,
         failure: &TokenStream,
     ) -> Result<TokenStream, Error> {
         match self {
             Self::ImplTrait(_) => Ok(quote! {
-                if #ident == 0 {
+                let Some(#owner) = #owner else {
                     ::boltffi::__private::set_last_error(concat!(stringify!(#ident), ": null closure handle"));
                     #failure
-                }
-                let #owner = ::boltffi::__private::WasmCallbackOwner::new(#ident, #free);
+                };
                 let #ident = move |#(#rust_parameters),*| {
                     #body
                 };
             }),
             Self::Boxed(_, ty) => Ok(quote! {
-                if #ident == 0 {
+                let Some(#owner) = #owner else {
                     ::boltffi::__private::set_last_error(concat!(stringify!(#ident), ": null closure handle"));
                     #failure
-                }
-                let #owner = ::boltffi::__private::WasmCallbackOwner::new(#ident, #free);
+                };
                 let #ident: #ty = Box::new(move |#(#rust_parameters),*| {
                     #body
                 });
             }),
             Self::NullableBoxed(_, ty) => Ok(quote! {
-                let #ident: #ty = if #ident == 0 {
-                    None
-                } else {
-                    let #owner = ::boltffi::__private::WasmCallbackOwner::new(#ident, #free);
-                    Some(Box::new(move |#(#rust_parameters),*| {
-                        #body
-                    }) as _)
-                };
+                let #ident: #ty = #owner.map(|#owner| {
+                    Box::new(move |#(#rust_parameters),*| { #body }) as _
+                });
             }),
         }
     }
@@ -1409,8 +1421,6 @@ impl ClosureBinding {
 struct NativeBinding {
     ident: Ident,
     callback: Ident,
-    context: Ident,
-    release: Ident,
     owner: Ident,
     rust_parameters: Vec<TokenStream>,
     body: TokenStream,
