@@ -555,7 +555,8 @@ private let typeMemberCoverageGaps: Set<String> = [
 private let featureScopedRustFiles: Set<String> = [
     "callbacks/csharp_closures.rs",
     "classes/async_factory.rs",
-    "records/mutable.rs"
+    "records/mutable.rs",
+    "wasm_interop.rs"
 ]
 
 private func typeMemberCoverageKey(_ rustTypeMember: RustTypeMember) -> String {
@@ -583,6 +584,7 @@ private let rustToSwiftCoverageFile: [String: String] = [
     "classes/unsafe_single_threaded.rs": "classes/UnsafeSingleThreadedTests.swift",
     "collections/mod.rs": "collections/CollectionsTests.swift",
     "custom_types/mod.rs": "custom_types/CustomTypesTests.swift",
+    "custom_types/length.rs": "custom_types/CustomTypesTests.swift",
     "enums/c_style.rs": "enums/CStyleEnumsTests.swift",
     "enums/complex_variants.rs": "enums/ComplexVariantsEnumsTests.swift",
     "enums/data_enum.rs": "enums/DataEnumTests.swift",
