@@ -201,7 +201,7 @@ impl EnumClass {
         self.wire.is_none()
     }
 
-    fn callables(&self) -> impl Iterator<Item = &AssociatedCallable> {
+    pub fn callables(&self) -> impl Iterator<Item = &AssociatedCallable> {
         self.constructors
             .iter()
             .chain(&self.static_methods)
