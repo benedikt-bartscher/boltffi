@@ -502,7 +502,7 @@ mod tests {
         assert!(source.contains("abstract interface class Transformer"));
         assert!(source.contains("Future<int?> load(String key)"));
         assert!(source.contains("TransformerVTable extends $$ffi.Struct"));
-        assert!(source.contains("TransformerBridge.create(transformer)"));
+        assert!(source.contains("_TransformerBridge.create(transformer)"));
         assert!(
             source.contains("_$$boltTrackListener($$ffi.NativeCallable.listener(_m$load))"),
             "async callback slots must use listener, not isolateLocal"
@@ -644,7 +644,8 @@ mod tests {
         assert!(source.contains(".callPtr"));
         assert!(source.contains(".releasePtr"));
         assert!(source.contains(".insert("));
-        assert!(source.contains("(int Function(int))? callback"));
+        assert!(source.contains("int maybeApply(int Function(int)? callback, int value)"));
+        assert!(!source.contains("(int Function(int))"));
         assert!(source.contains("int tryApply(int Function(int) callback, int value)"));
         assert!(source.contains("on MathError catch"));
         assert!(output.diagnostics().is_empty());
@@ -662,6 +663,11 @@ mod tests {
             #[export]
             pub fn make_labeler(prefix: String) -> Box<dyn Fn(String) -> String> {
                 Box::new(move |value| format!("{prefix}{value}"))
+            }
+
+            #[export]
+            pub fn make_optional_adder(base: i32) -> Option<Box<dyn Fn(i32) -> i32>> {
+                Some(Box::new(move |value| base + value))
             }
 
             #[export]
@@ -689,6 +695,7 @@ mod tests {
         let source = file(&output, "demo/lib/demo.dart");
         assert!(source.contains("int Function(int) makeAdder(int $base)"));
         assert!(source.contains("String Function(String) makeLabeler(String prefix)"));
+        assert!(source.contains("int Function(int)? makeOptionalAdder(int $base)"));
         assert!(source.contains(
             "Future<int Function(int)> makeAsyncAdder(int $base, {$$BoltCancellationToken? cancellationToken})"
         ));
@@ -727,10 +734,7 @@ mod tests {
         assert!(source.contains("int? maybe(int? value)"));
         assert!(source.contains("List<Point> points(List<Point> values)"));
         assert!(source.contains("$$typed_data.Int64List offsets($$typed_data.Int64List values)"));
-        assert!(
-            source
-                .contains("ptr.cast<$$ffi.IntPtr>().elementAt(_l$index).value = values[_l$index]")
-        );
+        assert!(source.contains("ptr.cast<$$ffi.IntPtr>() + _l$index).value = values[_l$index]"));
         assert!(source.contains("List<int>.generate"));
         assert!(!source.contains("cast<$$ffi.IntPtr>().asTypedList"));
         assert!(source.contains("_m$writeStruct"));
@@ -804,9 +808,9 @@ mod tests {
         let source = file(&output, "demo/lib/demo.dart");
         assert!(source.contains("$$BoltResult<int, $$BoltException> result;"));
         assert!(source.contains("Mode._m$fromDiscriminant(_p$reader.readU8())"));
-        assert!(source.contains("_p$writer.writeU8(mode.value);"));
+        assert!(source.contains("_p$writer.writeU8((mode).value);"));
         assert!(source.contains("WideMode._m$fromDiscriminant(_p$reader.readU64())"));
-        assert!(source.contains("_p$writer.writeU64(wideMode.value);"));
+        assert!(source.contains("_p$writer.writeU64((wideMode).value);"));
         assert!(source.contains("((endpoint).toString().length * 3)"));
         assert!(source.contains("$$BoltResult.err($$BoltException(_p$reader.readString()))"));
         assert!(source.contains(".writeString(_l$boltffiValue0.message);"));
@@ -949,6 +953,93 @@ mod tests {
         assert!(source.contains("$$ffi.NativeCallable.listener(streamCallback)"));
         assert!(source.contains("unsubscribeFn(handle);"));
         assert!(source.contains("release();"));
+        assert!(output.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn dart_target_drops_dead_catch_after_object_error_binding() {
+        let bindings = bindings(
+            r#"
+            #[export]
+            pub trait MessageSink {
+                fn render(&self, key: i32) -> Result<String, String>;
+            }
+
+            #[export]
+            pub fn render_with(sink: impl MessageSink, key: i32) -> Result<String, String> {
+                sink.render(key)
+            }
+            "#,
+        );
+        let output = target(DartHost::new().package("demo"))
+            .render(&bindings)
+            .expect("string-error callback should render");
+
+        let source = file(&output, "demo/lib/demo.dart");
+        assert!(
+            source.contains("on Object catch"),
+            "string payloads bind `Object`, {source}"
+        );
+        assert!(
+            !source.contains("} catch (_l$unexpectedError)"),
+            "a `catch` after `on Object catch` is unreachable, {source}"
+        );
+        assert!(output.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn dart_target_skips_dead_binders_in_optional_codecs() {
+        let bindings = bindings(
+            r#"
+            #[data]
+            pub enum Shade { Light, Dark }
+
+            #[data]
+            pub struct Config {
+                pub endpoint: Option<String>,
+            }
+
+            #[export]
+            pub fn paint(
+                shade: Option<Shade>,
+                tags: Option<Vec<i32>>,
+                pairs: Vec<(i32, i32)>,
+                config: Config,
+            ) {}
+            "#,
+        );
+        let output = target(DartHost::new().package("demo"))
+            .render(&bindings)
+            .expect("optional parameters should render");
+
+        let source = file(&output, "demo/lib/demo.dart");
+        assert!(
+            source.contains("((shade) == null ? 0 : 4)"),
+            "constant-size optionals need no unwrap local, {source}"
+        );
+        assert!(
+            !source.contains("shade!"),
+            "null-checked values promote without `!`, {source}"
+        );
+        assert!(
+            source.contains("(_l$boltffiValue0).length * (4)"),
+            "constant element sizes collapse the fold, {source}"
+        );
+        assert!(!source.contains("= tags!;"), "{source}");
+        assert!(
+            source.contains("(pairs).length * (4 + 4)"),
+            "additive element sizes stay parenthesized, {source}"
+        );
+        assert!(
+            source.contains("if (endpoint case final _l$boltffiValue0?)"),
+            "nullable fields bind via a scoped null-check pattern, {source}"
+        );
+        assert!(
+            source.contains(
+                "final _l$boltffiValue0 = endpoint; return _l$boltffiValue0 == null ? 0 :"
+            ),
+            "size expressions null-check the bound local, {source}"
+        );
         assert!(output.diagnostics().is_empty());
     }
 }

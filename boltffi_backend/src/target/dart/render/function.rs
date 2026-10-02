@@ -775,7 +775,7 @@ pub fn render_parameter(
                 },
                 HandleTarget::Callback(_) => {
                     let callback = type_name::handle(target, HandlePresence::Required, context)?;
-                    format!("{callback}Bridge.create({name})")
+                    format!("_{callback}Bridge.create({name})")
                 }
                 HandleTarget::Stream(_) => {
                     return super::super::unsupported("stream handle parameter");
@@ -836,7 +836,7 @@ pub fn render_parameter(
                                 "final {storage} = _$$BoltStoragePool.acquireStorage($$ffi.sizeOf<{native}>() * {name}.length);"
                             ),
                             format!(
-                                "for (var _l$index = 0; _l$index < {name}.length; _l$index++) {{ {name}[_l$index]._m$writeStruct({storage}.ptr.cast<{native}>().elementAt(_l$index)); }}"
+                                "for (var _l$index = 0; _l$index < {name}.length; _l$index++) {{ {name}[_l$index]._m$writeStruct(({storage}.ptr.cast<{native}>() + _l$index)); }}"
                             ),
                         ],
                         vec![
@@ -1013,52 +1013,61 @@ fn render_direct_argument(
             };
             Ok(DartArgument::new(Vec::new(), vec![argument], Vec::new()))
         }
-        DirectValueType::Record(_) => match (receive, group) {
-            (Receive::ByValue, ParameterGroup::Value(_)) => Ok(DartArgument::new(
-                Vec::new(),
-                vec![format!("{value}._m$toStruct()")],
-                Vec::new(),
-            )),
-            (Receive::ByRef, ParameterGroup::Value(index)) => {
-                match function.parameter(*index).ty() {
-                    CBridgeType::ConstPointer(inner) => {
-                        let native = dart_native::NativeType::from_c(inner)?;
-                        let storage = format!("_l${}Storage", value.trim_start_matches("this"));
-                        Ok(DartArgument::new(
-                            vec![
-                                format!(
-                                    "final {storage} = _$$BoltCallocPtr<{}>.alloc($$ffi.sizeOf<{}>());",
-                                    native.native(),
-                                    native.native(),
-                                ),
-                                format!("{value}._m$writeStruct({storage}.ptr);"),
-                            ],
-                            vec![format!("{storage}.ptr")],
-                            Vec::new(),
-                        ))
+        DirectValueType::Record(_) => {
+            let recv = if value == "this" {
+                String::new()
+            } else {
+                format!("{value}.")
+            };
+            match (receive, group) {
+                (Receive::ByValue, ParameterGroup::Value(_)) => Ok(DartArgument::new(
+                    Vec::new(),
+                    vec![format!("{recv}_m$toStruct()")],
+                    Vec::new(),
+                )),
+                (Receive::ByRef, ParameterGroup::Value(index)) => {
+                    match function.parameter(*index).ty() {
+                        CBridgeType::ConstPointer(inner) => {
+                            let native = dart_native::NativeType::from_c(inner)?;
+                            let storage = format!("_l${}Storage", value.trim_start_matches("this"));
+                            Ok(DartArgument::new(
+                                vec![
+                                    format!(
+                                        "final {storage} = _$$BoltCallocPtr<{}>.alloc($$ffi.sizeOf<{}>());",
+                                        native.native(),
+                                        native.native(),
+                                    ),
+                                    format!("{recv}_m$writeStruct({storage}.ptr);"),
+                                ],
+                                vec![format!("{storage}.ptr")],
+                                Vec::new(),
+                            ))
+                        }
+                        CBridgeType::DirectRecord(_) | CBridgeType::Named(_) => {
+                            Ok(DartArgument::new(
+                                Vec::new(),
+                                vec![format!("{recv}_m$toStruct()")],
+                                Vec::new(),
+                            ))
+                        }
+                        _ => broken("borrowed direct record disagrees with its C parameter type"),
                     }
-                    CBridgeType::DirectRecord(_) | CBridgeType::Named(_) => Ok(DartArgument::new(
-                        Vec::new(),
-                        vec![format!("{value}._m$toStruct()")],
-                        Vec::new(),
-                    )),
-                    _ => broken("borrowed direct record disagrees with its C parameter type"),
                 }
+                (Receive::ByMutRef, ParameterGroup::DirectWriteback(writeback)) => {
+                    let output = OutPointer::from_index(writeback.output(), function)?;
+                    let storage = format!("_l${}Out", value.trim_start_matches("this"));
+                    Ok(DartArgument::new(
+                        vec![output.allocation(&storage)?],
+                        vec![format!("{recv}_m$toStruct()"), format!("{storage}.ptr")],
+                        vec![format!(
+                            "{recv}_m$updateFromStruct({});",
+                            output.read(&format!("{storage}.ptr"))?
+                        )],
+                    ))
+                }
+                _ => broken("direct record Dart parameter disagrees with C bridge group"),
             }
-            (Receive::ByMutRef, ParameterGroup::DirectWriteback(writeback)) => {
-                let output = OutPointer::from_index(writeback.output(), function)?;
-                let storage = format!("_l${}Out", value.trim_start_matches("this"));
-                Ok(DartArgument::new(
-                    vec![output.allocation(&storage)?],
-                    vec![format!("{value}._m$toStruct()"), format!("{storage}.ptr")],
-                    vec![format!(
-                        "{value}._m$updateFromStruct({});",
-                        output.read(&format!("{storage}.ptr"))?
-                    )],
-                ))
-            }
-            _ => broken("direct record Dart parameter disagrees with C bridge group"),
-        },
+        }
         _ => super::super::unsupported("unknown direct parameter type"),
     }
 }
@@ -1312,10 +1321,10 @@ fn handle_return(
             format!("_l$result == 0 ? null : {required}._(_l$result)")
         }
         (HandleTarget::Callback(_), HandlePresence::Required) => {
-            format!("{required}Bridge.wrap(_l$result)")
+            format!("_{required}Bridge.wrap(_l$result)")
         }
         (HandleTarget::Callback(_), HandlePresence::Nullable) => {
-            format!("_l$result.handle == 0 ? null : {required}Bridge.wrap(_l$result)")
+            format!("_l$result.handle == 0 ? null : _{required}Bridge.wrap(_l$result)")
         }
         (HandleTarget::Stream(_), _) => {
             return super::super::unsupported("stream handle return");
@@ -1405,7 +1414,7 @@ fn direct_vector_return(
                     "final _l$count = _l$result.len ~/ $$ffi.sizeOf<{native}>();"
                 )],
                 format!(
-                    "List<{public}>.generate(_l$count, (_l$index) => {public}._m$fromStruct(_l$result.ptr.cast<{native}>().elementAt(_l$index).ref))"
+                    "List<{public}>.generate(_l$count, (_l$index) => {public}._m$fromStruct((_l$result.ptr.cast<{native}>() + _l$index).ref))"
                 ),
             )
         }
