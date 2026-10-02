@@ -155,7 +155,7 @@ impl Enumeration {
                     declaration.initializers(),
                     declaration.methods(),
                     Placement::Static,
-                    Receiver::EncodedValue,
+                    Receiver::EncodedEnum,
                     bridge,
                     context,
                 )?,
