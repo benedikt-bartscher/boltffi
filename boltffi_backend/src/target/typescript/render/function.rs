@@ -1,10 +1,10 @@
 use askama::Template as AskamaTemplate;
 use boltffi_binding::{
-    CallbackId, CanonicalName, ClassId, DirectValueType, DirectVectorElementType, EnumDecl, EnumId,
-    ErrorChannel, ErrorPlacement, ExecutionDecl, ExportedCallable, ExportedMethodDecl,
-    FunctionDecl, HandlePresence, HandleTarget, InitializerDecl, IntoRust, NativeSymbol,
-    ParamPlanRender, Primitive, Receive, RecordDecl, RecordId, ReturnPlanRender, ReturnValueSlot,
-    TypeRef, Wasm32, WasmIncomingClosure, wasm32,
+    CallbackId, CanonicalName, ClassId, DefaultValue, DirectValueType, DirectVectorElementType,
+    EnumDecl, EnumId, ErrorChannel, ErrorPlacement, ExecutionDecl, ExportedCallable,
+    ExportedMethodDecl, FunctionDecl, HandlePresence, HandleTarget, IncomingParam, InitializerDecl,
+    IntoRust, NativeSymbol, ParamDecl, ParamPlanRender, Primitive, Receive, RecordDecl, RecordId,
+    ReturnPlanRender, ReturnValueSlot, TypeRef, Wasm32, WasmIncomingClosure, wasm32,
 };
 
 use crate::core::{CoverageMode, Diagnostic, Emitted, Error, RenderContext, Result};
@@ -18,7 +18,7 @@ use super::super::{
         ArgumentList, Expression, Identifier, MemberName, MethodDeclaration, Statement, TypeName,
     },
 };
-use super::closure::ClosureAdapter;
+use super::{closure::ClosureAdapter, default_value::DefaultExpression};
 
 #[derive(AskamaTemplate)]
 #[template(path = "target/typescript/function.ts", escape = "none")]
@@ -34,6 +34,7 @@ pub struct Function {
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct Parameter {
+    default: Option<Expression>,
     owned: Option<OwnedArgument>,
     name: Identifier,
     ty: TypeName,
@@ -52,6 +53,7 @@ enum OwnedArgument {
     },
     Closure {
         parameter: Identifier,
+        presence: HandlePresence,
         local: Identifier,
         register: Identifier,
         unregister: Identifier,
@@ -95,8 +97,8 @@ struct AsyncCall {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 enum ReturnConversion {
     Void,
-    Direct,
-    Boolean,
+    Scalar(Scalar),
+    ScalarEnum(Scalar),
     String,
     Utf8String,
     Bytes,
@@ -566,17 +568,12 @@ impl Function {
             .and_then(|receiver| receiver.parameter.clone())
             .map(Ok)
             .into_iter()
-            .chain(callable.params().iter().map(|parameter| {
-                let name = Name::new(parameter.name()).identifier()?;
-                match parameter.payload() {
-                    boltffi_binding::IncomingParam::Value(plan) => {
-                        plan.render_with(&mut ParameterRenderer { name, context })
-                    }
-                    boltffi_binding::IncomingParam::Closure(closure) => {
-                        Parameter::closure(name, closure, context)
-                    }
-                }
-            }))
+            .chain(
+                callable
+                    .params()
+                    .iter()
+                    .map(|parameter| Parameter::from_declaration(parameter, context)),
+            )
             .collect::<Result<Vec<_>>>()?;
         let returns = callable
             .returns()
@@ -1012,6 +1009,43 @@ impl FailureValue {
 }
 
 impl Parameter {
+    fn from_declaration(
+        parameter: &ParamDecl<Wasm32, IntoRust>,
+        context: &RenderContext<Wasm32>,
+    ) -> Result<Self> {
+        let name = Name::new(parameter.name()).identifier()?;
+        let mut rendered = match parameter.payload() {
+            IncomingParam::Value(plan) => {
+                plan.render_with(&mut ParameterRenderer { name, context })?
+            }
+            IncomingParam::Closure(closure) => Self::closure(name, closure, context)?,
+        };
+        if let Some(value) = parameter.meta().default() {
+            rendered.default = Some(match parameter.payload() {
+                IncomingParam::Value(plan) => {
+                    let ty = plan.value_type().ok_or_else(|| {
+                        Function::unsupported("default value for this parameter type")
+                    })?;
+                    DefaultExpression::render(&ty, value, context)?
+                }
+                IncomingParam::Closure(_) if matches!(value, DefaultValue::Null) => {
+                    Expression::null()
+                }
+                IncomingParam::Closure(_) => {
+                    return Err(Function::unsupported("non-null closure default"));
+                }
+            });
+        }
+        Ok(rendered)
+    }
+
+    fn declaration(&self) -> String {
+        match &self.default {
+            Some(default) => format!("{}: {} = {default}", self.name, self.ty),
+            None => format!("{}: {}", self.name, self.ty),
+        }
+    }
+
     fn closure(
         name: Identifier,
         closure: &boltffi_binding::ClosureParameter<Wasm32, IntoRust>,
@@ -1022,13 +1056,19 @@ impl Parameter {
                 .ok_or_else(|| Function::unsupported("closure parameter"))?;
         let handle = Identifier::parse(format!("__boltffi_{name}_handle"))?;
         Ok(Self {
+            default: None,
             owned: Some(OwnedArgument::Closure {
                 parameter: name.clone(),
+                presence: closure.presence(),
                 local: handle.clone(),
                 register: adapter.register(),
                 unregister: adapter.unregister().clone(),
             }),
-            ty: adapter.parameter_type(),
+            ty: match closure.presence() {
+                HandlePresence::Required => adapter.parameter_type(),
+                HandlePresence::Nullable => adapter.parameter_type().nullable(),
+                _ => return Err(Function::unsupported("closure parameter presence")),
+            },
             setup: Vec::new(),
             arguments: vec![Expression::identifier(handle)],
             cleanup: Vec::new(),
@@ -1107,6 +1147,7 @@ impl Parameter {
 
     fn direct(name: Identifier, primitive: Primitive) -> Result<Self> {
         Ok(Self {
+            default: None,
             owned: None,
             ty: Type::primitive(primitive)?,
             arguments: vec![Expression::identifier(name.clone())],
@@ -1126,6 +1167,7 @@ impl Parameter {
             .map(|enumeration| TypeName::named(Name::new(enumeration.name()).type_name()))
             .ok_or_else(|| Function::unsupported("enum without declaration"))?;
         Ok(Self {
+            default: None,
             owned: None,
             ty,
             arguments: vec![Expression::identifier(name.clone())],
@@ -1161,6 +1203,7 @@ impl Parameter {
             let allocation = Identifier::parse(format!("__boltffi_{name}_allocation"))?;
             let allocation_value = Expression::identifier(allocation.clone());
             return Ok(Self {
+                default: None,
                 owned: None,
                 ty,
                 setup: vec![Statement::constant(
@@ -1200,6 +1243,7 @@ impl Parameter {
         let Some(allocation_method) = allocation_method else {
             let writer_value = Expression::identifier(writer.clone());
             return Ok(Self {
+                default: None,
                 owned: None,
                 ty,
                 setup: std::iter::once(Statement::constant(
@@ -1229,6 +1273,7 @@ impl Parameter {
         let allocation = Identifier::parse(format!("__boltffi_{name}_allocation"))?;
         let allocation_value = Expression::identifier(allocation.clone());
         Ok(Self {
+            default: None,
             owned: None,
             ty,
             setup: vec![Statement::constant(
@@ -1292,6 +1337,7 @@ impl Parameter {
             false => vec![free],
         };
         Ok(Self {
+            default: None,
             owned: None,
             ty: vector.parameter_type()?,
             setup: vec![Statement::constant(
@@ -1312,6 +1358,7 @@ impl Parameter {
     fn scalar_option(name: Identifier, primitive: Primitive) -> Result<Self> {
         let option = ScalarOption::new(primitive)?;
         Ok(Self {
+            default: None,
             owned: None,
             ty: option.ty()?,
             arguments: vec![option.argument(Expression::identifier(name.clone()))],
@@ -1365,6 +1412,7 @@ impl Parameter {
             [writer_value.clone()].into_iter().collect::<ArgumentList>(),
         )));
         Ok(Self {
+            default: None,
             owned: None,
             ty: Name::new(record.name()).type_name(),
             setup: vec![
@@ -1446,6 +1494,7 @@ impl Parameter {
             )],
         };
         Ok(Self {
+            default: None,
             owned,
             ty,
             arguments,
@@ -1483,6 +1532,7 @@ impl Parameter {
             _ => return Err(Function::unsupported("unknown callback handle presence")),
         };
         Ok(Self {
+            default: None,
             owned: None,
             name,
             ty,
@@ -1739,8 +1789,12 @@ impl Return {
     fn render(&self, call: Expression) -> Vec<Statement> {
         match &self.conversion {
             ReturnConversion::Void => vec![Statement::expression(call)],
-            ReturnConversion::Direct => vec![Statement::return_value(call)],
-            ReturnConversion::Boolean => vec![Statement::return_value(call.not_zero())],
+            ReturnConversion::Scalar(scalar) => vec![Statement::return_value(scalar.lift(call))],
+            ReturnConversion::ScalarEnum(scalar) => {
+                vec![Statement::return_value(
+                    scalar.lift(call).cast(self.ty.clone()),
+                )]
+            }
             ReturnConversion::String => vec![Statement::return_value(Expression::call(
                 Expression::identifier(Identifier::known("_module")),
                 Identifier::known("takePackedWireString"),
@@ -1977,21 +2031,22 @@ impl<'plan> ReturnPlanRender<'plan, Wasm32, boltffi_binding::OutOfRust> for Retu
     fn direct(&mut self, slot: ReturnValueSlot, ty: &'plan DirectValueType) -> Self::Output {
         match (slot, ty) {
             (ReturnValueSlot::ReturnSlot, DirectValueType::Primitive(primitive)) => {
+                let scalar = Scalar::new(*primitive)?;
+                Ok(Return::new(scalar.ty(), ReturnConversion::Scalar(scalar)))
+            }
+            (ReturnValueSlot::ReturnSlot, DirectValueType::Enum(id)) => {
+                let enumeration = self
+                    .context
+                    .enumeration(*id)
+                    .ok_or_else(|| Function::unsupported("enum without declaration"))?;
+                let EnumDecl::CStyle(enumeration) = enumeration else {
+                    return Err(Function::unsupported("direct data enum return"));
+                };
                 Ok(Return::new(
-                    Type::primitive(*primitive)?,
-                    match primitive {
-                        Primitive::Bool => ReturnConversion::Boolean,
-                        _ => ReturnConversion::Direct,
-                    },
+                    Name::new(enumeration.name()).type_name(),
+                    ReturnConversion::ScalarEnum(Scalar::new(enumeration.repr().primitive())?),
                 ))
             }
-            (ReturnValueSlot::ReturnSlot, DirectValueType::Enum(id)) => Ok(Return::new(
-                self.context
-                    .enumeration(*id)
-                    .map(|enumeration| Name::new(enumeration.name()).type_name())
-                    .ok_or_else(|| Function::unsupported("enum without declaration"))?,
-                ReturnConversion::Direct,
-            )),
             (ReturnValueSlot::OutPointer, DirectValueType::Primitive(primitive)) => {
                 let scalar = Scalar::new(*primitive)?;
                 let read = scalar.read_method();
