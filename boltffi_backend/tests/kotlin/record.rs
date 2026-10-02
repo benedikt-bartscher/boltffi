@@ -1,4 +1,4 @@
-use super::{rendered_fixture, run_kotlin_assertions};
+use super::{files, fixture, kotlin_compiler, rendered_fixture, run_with_generated_kotlin};
 
 #[test]
 fn kotlin_target_steps_over_direct_record_padding_in_wire_codecs() {
@@ -48,8 +48,16 @@ fn kotlin_target_compares_array_fields_by_content() {
 
 #[test]
 fn kotlin_array_fields_compare_by_content_at_runtime() {
-    run_kotlin_assertions(
-        "records/array_fields",
+    let Some(compiler) = kotlin_compiler() else {
+        eprintln!("Kotlin compiler is unavailable; skipping array field runtime assertions");
+        return;
+    };
+
+    run_with_generated_kotlin(
+        &compiler,
+        "array-fields",
+        files(&fixture("records/array_fields")),
+        "ArrayFields.kt",
         include_str!("../fixtures/kotlin/array_fields.kt"),
     );
 }

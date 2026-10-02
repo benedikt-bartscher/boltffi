@@ -1,4 +1,9 @@
-use std::{env, fs, process::Command, time::UNIX_EPOCH};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::UNIX_EPOCH,
+};
 
 use boltffi_ast::PackageInfo;
 use boltffi_backend::target::kotlin::KotlinHost;
@@ -86,27 +91,54 @@ pub fn fixture(name: &str) -> String {
     SourceFixture::one(name).read()
 }
 
-/// Compiles a fixture's generated Kotlin with `assertions` and runs its `main`;
-/// skipped when `kotlinc` is unavailable.
-pub fn run_kotlin_assertions(name: &str, assertions: &str) {
+pub fn kotlin_compiler() -> Option<PathBuf> {
     let compiler = if cfg!(windows) {
         "kotlinc.bat"
     } else {
         "kotlinc"
     };
-    if Command::new(compiler).arg("-version").output().is_err() {
-        eprintln!("Kotlin compiler is unavailable; skipping {name} runtime assertions");
-        return;
-    }
+    env::split_paths(&env::var_os("PATH")?)
+        .find_map(|directory| directory.join(compiler).canonicalize().ok())
+        .filter(|compiler| {
+            Command::new(compiler)
+                .arg("-version")
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+}
 
+pub fn run_with_generated_kotlin(
+    compiler: &Path,
+    label: &str,
+    files: Vec<(String, String)>,
+    caller_file: &str,
+    caller: &str,
+) {
+    let kotlin_home = env::var_os("KOTLIN_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            compiler
+                .parent()
+                .and_then(Path::parent)
+                .expect("Kotlin compiler installation directory")
+                .to_path_buf()
+        });
+    let coroutines = ["lib", "libexec/lib"]
+        .into_iter()
+        .map(|directory| {
+            kotlin_home
+                .join(directory)
+                .join("kotlinx-coroutines-core-jvm.jar")
+        })
+        .find(|path| path.is_file())
+        .expect("Kotlin installation must include kotlinx-coroutines-core-jvm.jar");
     let directory = env::temp_dir().join(format!(
-        "boltffi-kotlin-{}-{}-{}",
-        name.replace('/', "-"),
+        "boltffi-kotlin-{label}-{}-{}",
         std::process::id(),
         UNIX_EPOCH.elapsed().expect("system clock").as_nanos()
     ));
     fs::create_dir_all(&directory).expect("create Kotlin test directory");
-    let source_paths = files(&fixture(name))
+    let source_paths = files
         .into_iter()
         .filter(|(path, _)| path.ends_with(".kt"))
         .map(|(path, source)| {
@@ -117,12 +149,14 @@ pub fn run_kotlin_assertions(name: &str, assertions: &str) {
             path
         })
         .collect::<Vec<_>>();
-    let assertions_path = directory.join("Assertions.kt");
-    fs::write(&assertions_path, assertions).expect("write Kotlin assertions");
-    let jar = directory.join("assertions.jar");
+    let caller_path = directory.join(caller_file);
+    fs::write(&caller_path, caller).expect("write Kotlin caller");
+    let jar = directory.join(format!("{label}.jar"));
     let compilation = Command::new(compiler)
+        .arg("-classpath")
+        .arg(&coroutines)
         .args(&source_paths)
-        .arg(assertions_path)
+        .arg(caller_path)
         .args(["-include-runtime", "-d"])
         .arg(&jar)
         .output()
@@ -134,14 +168,22 @@ pub fn run_kotlin_assertions(name: &str, assertions: &str) {
         String::from_utf8_lossy(&compilation.stdout),
         String::from_utf8_lossy(&compilation.stderr)
     );
+    let main_class = format!(
+        "com.boltffi.demo.{}Kt",
+        Path::new(caller_file)
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .expect("Kotlin caller file name")
+    );
     let execution = Command::new("java")
-        .arg("-jar")
-        .arg(jar)
+        .arg("-classpath")
+        .arg(env::join_paths([&jar, &coroutines]).expect("Kotlin runtime classpath"))
+        .arg(main_class)
         .output()
-        .expect("run Kotlin assertions");
+        .expect("run Kotlin caller");
     assert!(
         execution.status.success(),
-        "Kotlin assertions for {name} failed:\n{}\n{}",
+        "Kotlin {label} assertions failed:\n{}\n{}",
         String::from_utf8_lossy(&execution.stdout),
         String::from_utf8_lossy(&execution.stderr)
     );
