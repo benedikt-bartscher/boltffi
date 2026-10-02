@@ -214,7 +214,7 @@ impl EnumClass {
         !self.bases.is_empty()
     }
 
-    fn callables(&self) -> impl Iterator<Item = &AssociatedCallable> {
+    pub fn callables(&self) -> impl Iterator<Item = &AssociatedCallable> {
         self.constructors
             .iter()
             .chain(&self.static_methods)
