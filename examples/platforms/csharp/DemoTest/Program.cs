@@ -8,7 +8,7 @@ using static Demo.Demo;
 
 namespace BoltFFI.Demo.Tests;
 
-public static class DemoTest
+public static partial class DemoTest
 {
     private static string currentDemoCase;
 
@@ -23,6 +23,7 @@ public static class DemoTest
             TestI16();
             TestU16();
             TestI32();
+            TestGeneratedNameCollisions();
             TestU32();
             TestI64();
             TestU64();
@@ -36,8 +37,10 @@ public static class DemoTest
             TestBlittableRecords();
             TestRecordsWithStrings();
             TestRecordsWithDefaults();
+            await TestDefaultArguments();
             TestNestedRecords();
             TestAssociatedConstants();
+            TestSingleElementTuple();
             TestCStyleEnums();
             TestDataEnums();
             TestRecordsWithEnumFields();
@@ -54,6 +57,7 @@ public static class DemoTest
             TestClasses();
             currentDemoCase = null;
             await ClassOwnershipTests.Run();
+            CallbackClassHandleTests.Run();
             TestResultFunctions();
             TestResultClassMethods();
             TestResultEnumErrors();
@@ -83,6 +87,14 @@ public static class DemoTest
         Require(!EchoBool(false), "echoBool(false)");
         Require(!NegateBool(true), "negateBool(true)");
         Require(NegateBool(false), "case:primitives.scalars.bool.should_negate_false_to_true negateBool(false)");
+        Console.WriteLine("  PASS\n");
+    }
+
+    private static void TestGeneratedNameCollisions()
+    {
+        Console.WriteLine("Testing generated C# helper names...");
+        DemoCase("case:primitives.scalars.named_status.should_accept_both_names");
+        NotifyStatusCollision(7, 11);
         Console.WriteLine("  PASS\n");
     }
 
@@ -220,6 +232,30 @@ public static class DemoTest
     private static void TestCustomTypes()
     {
         Console.WriteLine("Testing custom types (Email, UtcDateTime, Event)...");
+
+        DemoCase("case:custom_types.length.should_construct_in_meters");
+        Length length = Length.New(2.5);
+        Require(length.Value == 2.5, "Length meters");
+        DemoCase("case:custom_types.length.should_convert_to_centimeters");
+        Require(length.Centimeters() == 250.0, "Length centimeters");
+
+        DemoCase("case:custom_types.length.should_roundtrip_wrapper");
+        Length returnedLength = EchoLength(length);
+        Require(returnedLength.Value == 2.5, "EchoLength meters");
+        Require(returnedLength.Centimeters() == 250.0, "EchoLength centimeters");
+        Require(EchoLength(new Length(-1.25)).Centimeters() == -125.0, "negative length");
+
+        DemoCase("case:custom_types.length.should_write_back_in_meters");
+        Length updatedLength = returnedLength.SetCentimeters(75.0);
+        Require(updatedLength.Value == 0.75, "updated length meters");
+        Require(updatedLength.Centimeters() == 75.0, "updated length centimeters");
+        Require(length.Value == 2.5, "original length meters");
+        Require(length.Centimeters() == 250.0, "original length centimeters");
+
+        DemoCase("case:custom_types.length.should_roundtrip_nested_wrapper");
+        Fabric fabric = EchoFabric(new Fabric(new Length(1.25)));
+        Require(fabric.Length.Value == 1.25, "nested length meters");
+        Require(fabric.Length.Centimeters() == 125.0, "nested length centimeters");
 
         string email = "café@example.com";
         DemoCase("case:custom_types.email.should_roundtrip_value");
@@ -2658,6 +2694,10 @@ public static class DemoTest
     {
         Console.WriteLine("Testing async functions...");
 
+        DemoCase("case:async_fns.named_cancellation_token.should_preserve_both_values");
+        Require(await AsyncCancellationTokenCollision(7, 11) == 18,
+            "AsyncCancellationTokenCollision preserves both arguments");
+
         DemoCase("case:async_fns.basic.add.should_return_sum");
         Require(await AsyncAdd(3, 7) == 10, "AsyncAdd(3, 7)");
         DemoCase("case:async_fns.basic.echo.should_prefix_message");
@@ -3536,6 +3576,13 @@ public static class DemoTest
     private static void DemoCase(string caseId)
     {
         currentDemoCase = caseId;
+    }
+
+    private static void TestSingleElementTuple()
+    {
+        DemoCase("case:constants.tuples.should_expose_single_element_value");
+        ValueTuple<uint> value = DemoSingle;
+        Require(value.Item1 == 17u, "single-element tuple constant");
     }
 
     private static void TestAssociatedConstants()

@@ -5,6 +5,7 @@ mod constant;
 mod default_value;
 mod documentation;
 mod enumeration;
+mod parameter;
 mod record;
 mod stream;
 
@@ -33,24 +34,81 @@ use crate::{
     core::{
         AuxChunk, Diagnostic, Emitted, Error, FilePath, GeneratedFile, GeneratedOutput, HelperId,
         RenderContext, RenderedDeclaration, Result,
+        lexical::{LexicalPlan, NameStem, Scope, with_lexical_plan},
     },
 };
 
 use super::{
     codec::{ReadExpression, Reader, Writer, primitive_read_method, primitive_write_method},
     name_style::{Name, Namespace},
-    syntax::{ArgumentList, Expression, Identifier, Literal, Statement, TypeFragment},
+    syntax::{ArgumentList, Expression, Identifier, Literal, Statement, Syntax, TypeFragment},
     type_name,
 };
 use documentation::Documentation;
+use parameter::{Overload, Parameter};
 
 const TARGET: &str = "csharp";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct Parameter {
-    name: Identifier,
-    ty: TypeFragment,
-    marshal_i1: bool,
+struct FunctionNames {
+    status: Identifier,
+    cancellation_token: Identifier,
+    future: Identifier,
+    result: Identifier,
+    handle: Identifier,
+}
+
+impl FunctionNames {
+    fn new(parameters: &[Parameter], asynchronous: bool) -> Result<Self> {
+        with_lexical_plan::<Syntax, _>(|lexical| {
+            let scope = lexical.root();
+            for parameter in parameters {
+                lexical.reserve_external(scope, parameter.name.clone());
+            }
+            let has_parameter = |name| {
+                parameters
+                    .iter()
+                    .any(|parameter| parameter.name.as_str() == name)
+            };
+            let status = allocate_helper(
+                lexical,
+                scope,
+                if asynchronous || has_parameter("status") {
+                    "boltffiStatus"
+                } else {
+                    "status"
+                },
+            )?;
+            let cancellation_token = allocate_helper(
+                lexical,
+                scope,
+                if has_parameter("cancellationToken") {
+                    "boltffiCancellationToken"
+                } else {
+                    "cancellationToken"
+                },
+            )?;
+            let future = allocate_helper(lexical, scope, "boltffiFuture")?;
+            let result = allocate_helper(lexical, scope, "boltffiResult")?;
+            let handle = allocate_helper(lexical, scope, "boltffiHandle")?;
+            Ok(Self {
+                status,
+                cancellation_token,
+                future,
+                result,
+                handle,
+            })
+        })
+    }
+}
+
+fn allocate_helper<'plan>(
+    lexical: &mut LexicalPlan<'plan, Syntax>,
+    scope: Scope<'plan, Syntax>,
+    stem: &str,
+) -> Result<Identifier> {
+    let declaration = lexical.allocate(scope, &NameStem::new(stem))?;
+    Ok(lexical.declare(declaration, Clone::clone).into_parts().0)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,12 +152,14 @@ pub(super) struct Function {
     name: Identifier,
     native_name: Identifier,
     parameters: Vec<Parameter>,
+    overloads: Vec<Overload>,
     native_parameters: Vec<NativeParameter>,
     public_return_type: TypeFragment,
     returns_void: bool,
     native_return_type: TypeFragment,
     return_marshal_i1: bool,
     checks_status: bool,
+    names: FunctionNames,
     is_static: bool,
     extension_owner: Option<TypeFragment>,
     return_after_status: Option<Expression>,
@@ -134,6 +194,7 @@ struct OwnedCallTemplate<'call> {
     arguments: &'call [OwnedArgument],
     invocation: &'call Expression,
     asynchronous: bool,
+    returns_value: bool,
 }
 
 enum OwnedArgument {
@@ -146,6 +207,7 @@ enum OwnedArgument {
     Closure {
         parameter: Identifier,
         local: Identifier,
+        presence: HandlePresence,
     },
 }
 
@@ -572,6 +634,7 @@ impl Function {
                     })?;
             parameter_group_index += 1;
             let name = Name::new(parameter.name()).camel()?;
+            let default = Parameter::default_for(parameter, type_namespace, context)?;
             match parameter.payload() {
                 IncomingParam::Value(ParamPlan::Direct { ty, receive }) => {
                     let ParameterGroup::Value(index) = group else {
@@ -585,7 +648,7 @@ impl Function {
                     parameters.push(Parameter {
                         name: name.clone(),
                         ty: rendered_type.clone(),
-                        marshal_i1,
+                        default,
                     });
                     native_parameters.push(NativeParameter {
                         name: name.clone(),
@@ -632,7 +695,7 @@ impl Function {
                     parameters.push(Parameter {
                         name: name.clone(),
                         ty: render_type_ref(ty, type_namespace, context)?,
-                        marshal_i1: false,
+                        default,
                     });
                     let writer = generated_identifier(&name, "Writer")?;
                     let bytes = generated_identifier(&name, "Bytes")?;
@@ -786,7 +849,7 @@ impl Function {
                     parameters.push(Parameter {
                         name: name.clone(),
                         ty: public_type,
-                        marshal_i1: false,
+                        default,
                     });
                     native_parameters.push(NativeParameter {
                         name: name.clone(),
@@ -817,7 +880,7 @@ impl Function {
                     parameters.push(Parameter {
                         name: name.clone(),
                         ty: TypeFragment::new(format!("{}?", primitive_type(*primitive))),
-                        marshal_i1: false,
+                        default,
                     });
                     let writer = generated_identifier(&name, "Writer")?;
                     let bytes = generated_identifier(&name, "Bytes")?;
@@ -906,7 +969,7 @@ impl Function {
                     parameters.push(Parameter {
                         name: name.clone(),
                         ty: array_type.clone(),
-                        marshal_i1: false,
+                        default,
                     });
                     native_parameters.extend([
                         NativeParameter {
@@ -951,13 +1014,14 @@ impl Function {
                         "{native_name}{}Closure",
                         Name::new(parameter.name()).pascal()?
                     ))?;
-                    let closure = closure::ClosureArgument::from_declaration(
+                    let mut closure = closure::ClosureArgument::from_declaration(
                         name.clone(),
                         helper_name,
                         declaration,
                         closure_group,
                         context,
                     )?;
+                    closure.parameter.default = default;
                     parameters.push(closure.parameter);
                     native_parameters.extend(closure.native_parameters);
                     invocation_arguments.extend(closure.invocation_arguments);
@@ -1343,6 +1407,7 @@ impl Function {
                 arguments: &owned_arguments,
                 invocation: &invocation,
                 asynchronous: async_symbols.is_some(),
+                returns_value: true,
             }
             .render()?;
             if async_symbols.is_some() {
@@ -1358,6 +1423,7 @@ impl Function {
             _ => None,
         };
         let is_static = !receiver || extension_owner.is_some();
+        let names = FunctionNames::new(&parameters, async_symbols.is_some())?;
         let asynchronous = async_symbols
             .map(|symbols| {
                 AsyncCall::new(
@@ -1384,6 +1450,7 @@ impl Function {
                 encoded_writeback.as_ref(),
                 encoded_error.as_ref(),
                 handle_return.as_ref(),
+                &names,
             )?),
             None => (!setup.is_empty()
                 || encoded_return.is_some()
@@ -1402,6 +1469,7 @@ impl Function {
                     encoded_error.as_ref(),
                     handle_return.as_ref(),
                     &parameter_writebacks,
+                    &names.status,
                 )
             })
             .transpose()?,
@@ -1434,6 +1502,7 @@ impl Function {
             visibility: "public",
             name,
             native_name,
+            overloads: Overload::from_parameters(&parameters)?,
             parameters,
             native_parameters,
             public_return_type,
@@ -1447,6 +1516,7 @@ impl Function {
                 false => return_marshal_i1,
             },
             checks_status,
+            names,
             is_static,
             extension_owner,
             return_after_status,
@@ -1529,6 +1599,10 @@ impl Function {
             .into_iter()
             .fold(emitted, Emitted::with_aux)
             .with_diagnostics(diagnostics))
+    }
+
+    fn parameter_declarations(&self) -> Vec<String> {
+        Parameter::declarations(&self.parameters)
     }
 }
 
@@ -1695,6 +1769,7 @@ fn render_callable_body(
     encoded_error: Option<&EncodedError>,
     handle_return: Option<&HandleReturn>,
     parameter_writebacks: &[MutableParameterWriteback],
+    status: &Identifier,
 ) -> Result<Statement> {
     let mut lines = setup.iter().map(ToString::to_string).collect::<Vec<_>>();
     if let Some(error) = encoded_error {
@@ -1733,7 +1808,7 @@ fn render_callable_body(
         )),
         None if checks_status => {
             lines.push(format!(
-                "FfiStatus status = {invocation};\nif (status.code != 0)\n{{\n    throw new global::System.InvalidOperationException($\"BoltFFI call failed with status code {{status.code}}\");\n}}"
+                "FfiStatus {status} = {invocation};\nif ({status}.code != 0)\n{{\n    throw new global::System.InvalidOperationException($\"BoltFFI call failed with status code {{{status}.code}}\");\n}}"
             ));
             match (encoded_writeback, return_after_status) {
                 (Some(encoded), _) => lines.push(render_buffer_return(encoded)),
@@ -1761,12 +1836,14 @@ fn render_async_body(
     encoded_writeback: Option<&EncodedReturn>,
     encoded_error: Option<&EncodedError>,
     handle_return: Option<&HandleReturn>,
+    names: &FunctionNames,
 ) -> Result<Statement> {
     if encoded_writeback.is_some() {
         return unsupported("mutable encoded value in async function");
     }
-    let future = Identifier::parse("boltffiFuture")?;
-    let status = Identifier::parse("boltffiStatus")?;
+    let future = &names.future;
+    let status = &names.status;
+    let cancellation_token = &names.cancellation_token;
     let complete = Expression::call(
         Expression::member(
             Identifier::parse("NativeMethods")?,
@@ -1786,7 +1863,7 @@ fn render_async_body(
         Some(error) => {
             completion.push(format!("FfiBuf {} = {complete};", error.buffer));
             completion.push(format!(
-                "BoltFFIAsync.ThrowIfStatus({status}, cancellationToken);"
+                "BoltFFIAsync.ThrowIfStatus({status}, {cancellation_token});"
             ));
             completion.push(render_encoded_error_check(error));
             if let Some(encoded) = encoded_return {
@@ -1799,42 +1876,37 @@ fn render_async_body(
             let encoded = encoded_return.unwrap();
             completion.push(format!("FfiBuf {} = {complete};", encoded.buffer));
             completion.push(format!(
-                "BoltFFIAsync.ThrowIfStatus({status}, cancellationToken);"
+                "BoltFFIAsync.ThrowIfStatus({status}, {cancellation_token});"
             ));
             completion.push(render_buffer_return(encoded));
         }
         None if handle_return.is_some() => {
             let handle = handle_return.unwrap();
-            let local = Identifier::parse("boltffiHandle")?;
+            let local = &names.handle;
             completion.push(format!("{} {local} = {complete};", handle.native_type));
             completion.push(format!(
-                "BoltFFIAsync.ThrowIfStatus({status}, cancellationToken);"
+                "BoltFFIAsync.ThrowIfStatus({status}, {cancellation_token});"
             ));
             completion.push(format!(
                 "return {};",
-                handle_value_expression(
-                    handle.ty.clone(),
-                    &local,
-                    handle.nullable,
-                    handle.callback,
-                )
+                handle_value_expression(handle.ty.clone(), local, handle.nullable, handle.callback,)
             ));
         }
         None if returns_void => {
             completion.push(format!("{complete};"));
             completion.push(format!(
-                "BoltFFIAsync.ThrowIfStatus({status}, cancellationToken);"
+                "BoltFFIAsync.ThrowIfStatus({status}, {cancellation_token});"
             ));
         }
         None => {
             completion.push(format!(
-                "{} boltffiResult = {complete};",
-                asynchronous.complete_return_type
+                "{} {} = {complete};",
+                asynchronous.complete_return_type, names.result
             ));
             completion.push(format!(
-                "BoltFFIAsync.ThrowIfStatus({status}, cancellationToken);"
+                "BoltFFIAsync.ThrowIfStatus({status}, {cancellation_token});"
             ));
-            completion.push("return boltffiResult;".to_owned());
+            completion.push(format!("return {};", names.result));
         }
     }
 
@@ -1844,7 +1916,7 @@ fn render_async_body(
     };
     let mut lines = setup.iter().map(ToString::to_string).collect::<Vec<_>>();
     lines.push(format!(
-        "return BoltFFIAsync.{call}(\n    () => {start},\n    NativeMethods.{},\n    {future} =>\n    {{\n{}\n    }},\n    NativeMethods.{},\n    NativeMethods.{},\n    cancellationToken);",
+        "return BoltFFIAsync.{call}(\n    () => {start},\n    NativeMethods.{},\n    {future} =>\n    {{\n{}\n    }},\n    NativeMethods.{},\n    NativeMethods.{},\n    {cancellation_token});",
         asynchronous.poll_name,
         indent(&completion.join("\n"), 8),
         asynchronous.cancel_name,

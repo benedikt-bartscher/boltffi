@@ -1,7 +1,7 @@
 use askama::Template as AskamaTemplate;
 use boltffi_binding::{
-    CallbackDecl, DirectValueType, DirectVectorElementType, ExecutionDecl, Primitive, ReturnPlan,
-    TypeRef, Wasm32, wasm32,
+    CallbackDecl, DirectValueType, DirectVectorElementType, EnumDecl, ExecutionDecl, Primitive,
+    ReturnPlan, TypeRef, Wasm32, wasm32,
 };
 
 use crate::core::{Emitted, Error, RenderContext, Result};
@@ -35,6 +35,7 @@ pub struct Callback {
 }
 
 struct Method {
+    method_lookup: Option<Expression>,
     name: InterfaceMemberName,
     import: StringLiteral,
     parameters: Vec<Parameter>,
@@ -172,6 +173,10 @@ impl Local {
 }
 
 impl Method {
+    fn transfers_classes(&self) -> bool {
+        self.method_lookup.is_some()
+    }
+
     fn from_declaration(
         method: &boltffi_binding::ImportedMethodDecl<Wasm32, boltffi_binding::ImportSymbol>,
         context: &RenderContext<Wasm32>,
@@ -188,12 +193,30 @@ impl Method {
         {
             return Err(Self::unsupported("callback method error"));
         }
-        let parameters = method
+        let mut parameters = method
             .callable()
             .params()
             .iter()
             .map(|parameter| Parameter::from_declaration(parameter, context))
             .collect::<Result<Vec<_>>>()?;
+        let transfers_classes = parameters
+            .iter()
+            .any(|parameter| parameter.class_release.is_some());
+        if transfers_classes {
+            parameters
+                .iter_mut()
+                .enumerate()
+                .filter(|(_, parameter)| parameter.class_release.is_none())
+                .try_for_each(|(index, parameter)| {
+                    let local = Identifier::parse(format!("__boltffiArgument{index}"))?;
+                    parameter.setup.push(Statement::constant(
+                        local.clone(),
+                        parameter.argument.clone(),
+                    ));
+                    parameter.argument = Expression::identifier(local);
+                    Ok::<_, Error>(())
+                })?;
+        }
         let return_shape = match &fallible {
             Some((public_type, _))
                 if matches!(method.callable().returns().plan(), ReturnPlan::Void) =>
@@ -203,14 +226,23 @@ impl Method {
             Some((public_type, _)) => ReturnShape::fallible(public_type.clone()),
             None => Self::return_shape(method.callable().returns().plan(), context)?,
         };
-        let invocation = Expression::call_member(
-            Expression::identifier(Identifier::known("callback")),
-            &Name::new(method.name()).member()?,
-            parameters
-                .iter()
-                .map(|parameter| parameter.argument.clone())
-                .collect::<ArgumentList>(),
-        );
+        let callback = Expression::identifier(Identifier::known("callback"));
+        let member = Name::new(method.name()).member()?;
+        let arguments = parameters
+            .iter()
+            .map(|parameter| parameter.argument.clone());
+        let method_lookup =
+            transfers_classes.then(|| Expression::member(callback.clone(), &member));
+        let invocation = match method_lookup {
+            Some(_) => Expression::call(
+                Expression::identifier(Identifier::known("__boltffiInvoke")),
+                Identifier::known("call"),
+                std::iter::once(callback)
+                    .chain(arguments)
+                    .collect::<ArgumentList>(),
+            ),
+            None => Expression::call_member(callback, &member, arguments.collect::<ArgumentList>()),
+        };
         let invocation = match method.callable().returns().plan() {
             ReturnPlan::DirectViaReturnSlot {
                 ty: DirectValueType::Primitive(Primitive::Bool),
@@ -218,6 +250,7 @@ impl Method {
             _ => invocation,
         };
         Ok(Self {
+            method_lookup,
             name: InterfaceMemberName::new(Name::new(method.name()).member()?),
             import: StringLiteral::new(method.target().name().as_str()),
             parameters,
@@ -380,19 +413,24 @@ impl Method {
             ReturnPlan::Void => Ok(ReturnShape::void()),
             ReturnPlan::DirectViaReturnSlot {
                 ty: DirectValueType::Primitive(primitive),
-            } => Ok(ReturnShape::direct(
-                Scalar::new(*primitive)?.ty(),
-                Parameter::carrier_type(*primitive)?,
-            )),
+            } => {
+                let scalar = Scalar::new(*primitive)?;
+                Ok(ReturnShape::direct(scalar.ty(), scalar.carrier_type()))
+            }
             ReturnPlan::DirectViaReturnSlot {
                 ty: DirectValueType::Enum(id),
-            } => Ok(ReturnShape::direct(
-                context
+            } => {
+                let enumeration = context
                     .enumeration(*id)
-                    .map(|enumeration| Name::new(enumeration.name()).type_name())
-                    .ok_or_else(|| Self::unsupported("callback enum without declaration"))?,
-                TypeName::number(),
-            )),
+                    .ok_or_else(|| Self::unsupported("callback enum without declaration"))?;
+                let EnumDecl::CStyle(enumeration) = enumeration else {
+                    return Err(Self::unsupported("direct data enum callback return"));
+                };
+                Ok(ReturnShape::direct(
+                    Name::new(enumeration.name()).type_name(),
+                    Scalar::new(enumeration.repr().primitive())?.carrier_type(),
+                ))
+            }
             ReturnPlan::DirectViaOutPointer {
                 ty: DirectValueType::Record(id),
             } => ReturnShape::direct_record(*id, context),
