@@ -731,6 +731,11 @@ public final class DemoTest {
 
     private static void testParameterDefaults() {
         System.out.println("Testing parameter defaults...");
+        demoCase("case:primitives.default_arguments.should_keep_required_arguments_after_defaults");
+        assert Demo.addDefault(10) == 15;
+        assert Demo.addDefault(5, 10, true) == -15;
+        assert Demo.addDefault(0, 10) == 10;
+
         demoCase("case:primitives.default_arguments.should_apply_omitted_scalar_and_string_defaults");
         assert Demo.repeatGreeting("ada").equals("hello ada, hello ada");
         assert Demo.repeatGreeting("ada", "hi").equals("hi ada, hi ada");
