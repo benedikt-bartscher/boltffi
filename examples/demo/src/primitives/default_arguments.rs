@@ -8,6 +8,22 @@ use crate::callbacks::sync_traits::ValueCallback;
 use crate::custom_types::Email;
 
 #[demo_bench_macros::demo_case(
+    "primitives.default_arguments.should_keep_required_arguments_after_defaults",
+    justification = "Defaulted parameters can appear before a required parameter without making it optional",
+    directions = "Call add_default with only right, override negate while leaving left omitted where named arguments are available, then supply zero for left",
+    exclude(c, reason = ExclusionReason::ImplementationGap, details = "C has no default arguments.")
+)]
+#[export]
+pub fn add_default(
+    #[boltffi::default(5)] left: i32,
+    right: i32,
+    #[boltffi::default(false)] negate: bool,
+) -> i32 {
+    let sum = left + right;
+    if negate { -sum } else { sum }
+}
+
+#[demo_bench_macros::demo_case(
     "primitives.default_arguments.should_apply_omitted_scalar_and_string_defaults",
     justification = "A parameter's `#[boltffi::default(..)]` becomes a default argument, so a caller may leave trailing and named parameters out.",
     directions = "Call repeat_greeting with only a name and check the default greeting, count and case, then enable shout using named arguments or placeholders where available and explicit earlier values for positional APIs",
