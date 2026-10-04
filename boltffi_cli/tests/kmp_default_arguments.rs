@@ -8,7 +8,6 @@ use std::{
 };
 
 use boltffi_backend::{
-    GeneratedOutput,
     bridge::c::CBridge,
     core::bridge::BridgeBackend,
     target::{
@@ -24,7 +23,7 @@ struct KmpRuntime {
     directory: TempDir,
     java_home: PathBuf,
     rust_library: PathBuf,
-    generated: GeneratedOutput,
+    kotlin_sources: Vec<PathBuf>,
 }
 
 impl KmpRuntime {
@@ -96,7 +95,14 @@ impl KmpRuntime {
             .into_target()
             .render(&bindings)
             .expect("generate complete KMP bindings for the selected function");
-        Generation::write_output(generated.clone(), directory.path()).expect("write KMP bindings");
+        let kotlin_sources = generated
+            .files()
+            .iter()
+            .map(|file| file.path().as_path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "kt"))
+            .map(|path| directory.path().join(path))
+            .collect();
+        Generation::write_output(generated, directory.path()).expect("write KMP bindings");
         let header = CBridge::new(format!("include/{KMP_GENERATED_C_HEADER_DIR}/demo.h"))
             .expect("C header bridge");
         let contract = header.build_contract(&bindings).expect("C header contract");
@@ -108,15 +114,10 @@ impl KmpRuntime {
         )
         .expect("write C header");
         fs::write(
-            directory.path().join("CommonDefaults.kt"),
-            include_str!("fixtures/kmp/CommonDefaults.kt"),
-        )
-        .expect("write common caller");
-        fs::write(
             directory.path().join("DefaultConsumer.kt"),
             include_str!("fixtures/kmp/DefaultConsumer.kt"),
         )
-        .expect("write platform consumer");
+        .expect("write Kotlin caller");
         let rust_library = cargo_target.join("debug").join(format!(
             "{}demo{}",
             env::consts::DLL_PREFIX,
@@ -132,7 +133,7 @@ impl KmpRuntime {
             directory,
             java_home,
             rust_library,
-            generated,
+            kotlin_sources,
         }
     }
 
@@ -172,25 +173,22 @@ impl KmpRuntime {
                 .arg(&native_library),
             "compile generated JNI against the Rust fixture",
         );
+        let consumer = self.directory.path().join("DefaultConsumer.kt");
+        let common_directory = self.directory.path().join("src/commonMain/kotlin");
+        let platform_source_directory = self
+            .directory
+            .path()
+            .join(format!("src/{source_set}/kotlin"));
         let common_sources = self
-            .generated
-            .files()
+            .kotlin_sources
             .iter()
-            .filter(|file| file.path().as_path().starts_with("src/commonMain/kotlin"))
-            .map(|file| self.directory.path().join(file.path().as_path()))
-            .chain([self.directory.path().join("CommonDefaults.kt")])
+            .filter(|path| path.starts_with(&common_directory))
+            .chain([&consumer])
             .collect::<Vec<_>>();
         let platform_sources = self
-            .generated
-            .files()
+            .kotlin_sources
             .iter()
-            .filter(|file| {
-                file.path()
-                    .as_path()
-                    .starts_with(format!("src/{source_set}/kotlin"))
-            })
-            .map(|file| self.directory.path().join(file.path().as_path()))
-            .collect::<Vec<_>>();
+            .filter(|path| path.starts_with(&platform_source_directory));
         let jar = platform_directory.join("defaults.jar");
         self.execute(
             Command::new("kotlinc")
@@ -204,11 +202,10 @@ impl KmpRuntime {
                         .join(",")
                 ))
                 .args(&common_sources)
-                .args(&platform_sources)
-                .arg(self.directory.path().join("DefaultConsumer.kt"))
+                .args(platform_sources)
                 .args(["-include-runtime", "-d"])
                 .arg(&jar),
-            "compile common and platform bindings with their callers",
+            "compile the caller as common Kotlin code",
         );
         self.execute(
             Command::new(self.java_home.join("bin/java"))
@@ -216,16 +213,17 @@ impl KmpRuntime {
                     "-Djava.library.path={}",
                     platform_directory.display()
                 ))
-                .arg("-jar")
-                .arg(&jar),
-            "run common and platform defaults through the Rust fixture",
+                .arg("-classpath")
+                .arg(&jar)
+                .arg("com.boltffi.defaults.DefaultConsumerKt"),
+            "run common defaults through the Rust fixture",
         );
         let consumer_jar = platform_directory.join("consumer.jar");
         self.execute(
             Command::new("kotlinc")
                 .arg("-classpath")
                 .arg(&jar)
-                .arg(self.directory.path().join("DefaultConsumer.kt"))
+                .arg(&consumer)
                 .args(["-include-runtime", "-d"])
                 .arg(&consumer_jar),
             "compile a separate consumer of the generated library",

@@ -99,7 +99,15 @@ impl KmpEmitter {
         let internal_package = format!("{}.jvm", self.options.package_name());
         let internal_package_path = package_path(&internal_package);
         let common_dir = PathBuf::from("src/commonMain/kotlin").join(&source_package_path);
-        let common_source = common::render_common_module(module, self.options.package_name())?;
+        let functions = common::render_functions(module)?;
+        let common_source = common::render_common_module(&functions, self.options.package_name())?;
+        let actual_source = jvm::render_platform_actual(
+            &functions,
+            self.options.package_name(),
+            &internal_package,
+        )?;
+        let internal_source =
+            jvm::render_internal_kotlin(&functions, &internal_package, self.options.libraries())?;
         let support_metadata = KmpSupportMetadata::new(
             module.support_report(),
             self.options.package_name(),
@@ -128,29 +136,32 @@ impl KmpEmitter {
             self.file(KMP_SUPPORT_REPORT_FILE, support_report)?,
         ];
 
-        for adapter in jvm::default_adapters() {
-            let actual_dir = source_set_kotlin_dir(adapter.source_set, &source_package_path);
-            files.push(self.file(
-                actual_dir.join(format!(
-                    "{}{}.kt",
-                    self.options.module_name(),
-                    adapter.actual_file_suffix
-                )),
-                jvm::render_platform_actual(
-                    module,
-                    self.options.package_name(),
-                    &internal_package,
-                )?,
-            )?);
-        }
+        jvm::default_adapters()
+            .into_iter()
+            .try_for_each(|adapter| {
+                let actual_dir = source_set_kotlin_dir(adapter.source_set, &source_package_path);
+                files.push(self.file(
+                    actual_dir.join(format!(
+                        "{}{}.kt",
+                        self.options.module_name(),
+                        adapter.actual_file_suffix
+                    )),
+                    actual_source.clone(),
+                )?);
+                Ok::<_, Error>(())
+            })?;
 
-        for adapter in jvm::default_adapters() {
-            let internal_dir = source_set_kotlin_dir(adapter.source_set, &internal_package_path);
-            files.push(self.file(
-                internal_dir.join(format!("{}.kt", self.options.module_name())),
-                jvm::render_internal_kotlin(module, &internal_package, self.options.libraries())?,
-            )?);
-        }
+        jvm::default_adapters()
+            .into_iter()
+            .try_for_each(|adapter| {
+                let internal_dir =
+                    source_set_kotlin_dir(adapter.source_set, &internal_package_path);
+                files.push(self.file(
+                    internal_dir.join(format!("{}.kt", self.options.module_name())),
+                    internal_source.clone(),
+                )?);
+                Ok::<_, Error>(())
+            })?;
 
         Ok(GeneratedOutput::new(files, Vec::new()))
     }

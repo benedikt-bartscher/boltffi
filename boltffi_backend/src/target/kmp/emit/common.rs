@@ -14,7 +14,7 @@ use super::super::plan::{KmpApiBody, KmpFunctionPlan, KmpModule, KmpParamPlan, K
 #[template(path = "target/kmp/common_module.kt", escape = "none")]
 struct CommonModuleTemplate<'module> {
     package_name: &'module str,
-    functions: Vec<RenderedFunction>,
+    functions: &'module [RenderedFunction],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,10 +32,10 @@ pub(crate) struct RenderedParam {
     default: Option<String>,
 }
 
-pub(crate) fn render_common_module(module: &KmpModule, package_name: &str) -> Result<String> {
+pub fn render_common_module(functions: &[RenderedFunction], package_name: &str) -> Result<String> {
     Ok(CommonModuleTemplate {
         package_name,
-        functions: render_functions(module)?,
+        functions,
     }
     .render()?)
 }
