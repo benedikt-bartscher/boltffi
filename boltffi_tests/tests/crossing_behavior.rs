@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::error::Error;
 use std::ffi::c_void;
 use std::ptr;
 
@@ -652,17 +651,9 @@ mod closures {
 }
 
 mod results {
+    use std::error::Error;
+
     use super::*;
-
-    #[test]
-    fn thiserror_record_implements_the_rust_error_contract() {
-        let error = FixtureServiceError {
-            message: "unavailable".to_owned(),
-        };
-        let rust_error: &dyn Error = &error;
-
-        assert_eq!(rust_error.to_string(), "request failed: unavailable");
-    }
 
     #[test]
     fn thiserror_record_errors_cross_the_ffi_boundary() {
@@ -675,8 +666,10 @@ mod results {
         let failure =
             unsafe { boltffi_function_boltffi_tests_results_try_service(true, &mut value) };
         let error = decode_buf::<FixtureServiceError>(failure);
+        let rust_error: &dyn Error = &error;
+
         assert_eq!(error.message, "unavailable");
-        assert_eq!(error.to_string(), "request failed: unavailable");
+        assert_eq!(rust_error.to_string(), "request failed: unavailable");
     }
 
     #[test]
