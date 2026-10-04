@@ -2163,6 +2163,25 @@ static int boltffi_tests_check_streams(void) {
 
     fn results_harness(&self) -> &'static str {
         r#"static int boltffi_tests_check_results(void) {
+    int32_t thiserror_value = 0;
+    FfiBuf_u8 thiserror_success = boltffi_function_boltffi_tests_results_try_service(false, &thiserror_value);
+    int thiserror_empty = boltffi_tests_check_empty_buf(thiserror_success, 890);
+    if (thiserror_empty != 0) {
+        return thiserror_empty;
+    }
+    if (thiserror_value != 42) {
+        return 891;
+    }
+    const uint8_t thiserror_expected[15] = {11, 0, 0, 0, 'u', 'n', 'a', 'v', 'a', 'i', 'l', 'a', 'b', 'l', 'e'};
+    int thiserror_failure = boltffi_tests_check_buf(
+        boltffi_function_boltffi_tests_results_try_service(true, &thiserror_value),
+        thiserror_expected,
+        sizeof(thiserror_expected),
+        892
+    );
+    if (thiserror_failure != 0) {
+        return thiserror_failure;
+    }
     int32_t fixture_error_value = 0;
     FfiBuf_u8 fixture_error = boltffi_function_boltffi_tests_results_fallible_divide(12, 3, &fixture_error_value);
     int fixture_error_empty = boltffi_tests_check_empty_buf(fixture_error, 690);
