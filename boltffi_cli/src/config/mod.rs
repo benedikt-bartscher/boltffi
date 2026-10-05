@@ -20,8 +20,8 @@ pub use targets::{
     AndroidConfig, AndroidLinkConfig, AndroidPackConfig, AppleConfig, CConfig, CSharpConfig,
     DartConfig, HeaderConfig, JavaConfig, KotlinApiStyle, KotlinConfig, KotlinDesktopLoader,
     KotlinFactoryStyle, KotlinMultiplatformConfig, PythonConfig, SpmConfig, SpmDistribution,
-    SpmLayout, SwiftConfig, TargetsConfig, WasmConfig, WasmNpmTarget, WasmOptimizeLevel,
-    WasmOptimizeOnMissing, WasmProfile, XcframeworkConfig,
+    SpmLayout, SwiftConfig, TargetSection, TargetsConfig, WasmConfig, WasmNpmTarget,
+    WasmOptimizeLevel, WasmOptimizeOnMissing, WasmProfile, XcframeworkConfig,
 };
 #[cfg(test)]
 pub use targets::{CSharpNugetConfig, JavaJvmConfig, PythonWheelConfig};
@@ -281,6 +281,14 @@ impl Config {
                 return Err(ConfigError::Validation(format!(
                     "targets.csharp.namespace must be a dot-separated C# namespace, got '{}'",
                     namespace
+                )));
+            }
+
+            if let Some(name) = self.targets.csharp.module_class.as_deref()
+                && !is_valid_csharp_namespace_segment(name)
+            {
+                return Err(ConfigError::Validation(format!(
+                    "targets.csharp.module_class must be a C# identifier, got '{name}'"
                 )));
             }
 
@@ -777,21 +785,6 @@ impl Config {
                 || self.is_experimental_enabled(&Experimental::WholeTarget(target)))
     }
 
-    pub fn cargo_args_for_command(&self, command_name: &str) -> Vec<String> {
-        self.cargo
-            .global_args
-            .iter()
-            .chain(
-                self.cargo
-                    .command_args
-                    .get(command_name)
-                    .into_iter()
-                    .flat_map(|args| args.iter()),
-            )
-            .cloned()
-            .collect()
-    }
-
     pub fn cargo_args_for_commands(&self, command_names: &[&str]) -> Vec<String> {
         self.cargo
             .global_args
@@ -805,6 +798,17 @@ impl Config {
             }))
             .cloned()
             .collect()
+    }
+
+    /// `cargo_args_for_commands`, then the `[targets.<section>]` `cargo_args`.
+    pub fn cargo_args_for_target(
+        &self,
+        section: TargetSection,
+        command_names: &[&str],
+    ) -> Vec<String> {
+        let mut args = self.cargo_args_for_commands(command_names);
+        args.extend_from_slice(self.targets.cargo_args(section));
+        args
     }
 
     fn is_experimental_enabled(&self, exp: &Experimental) -> bool {
@@ -921,6 +925,10 @@ impl Config {
 
     pub fn c_output(&self) -> PathBuf {
         self.targets.c.output.clone()
+    }
+
+    pub fn csharp_module_class(&self) -> Option<&str> {
+        self.targets.csharp.module_class.as_deref()
     }
 
     pub fn csharp_namespace(&self) -> Option<&str> {
@@ -2033,7 +2041,7 @@ build = ["--features", "mobile"]
         );
 
         assert_eq!(
-            config.cargo_args_for_command("build"),
+            config.cargo_args_for_commands(&["build"]),
             vec![
                 "--locked".to_string(),
                 "--features".to_string(),
@@ -2083,9 +2091,122 @@ global_args = ["--frozen"]
         );
 
         assert_eq!(
-            config.cargo_args_for_command("test"),
+            config.cargo_args_for_commands(&["test"]),
             vec!["--frozen".to_string()]
         );
+    }
+
+    #[test]
+    fn appends_target_cargo_args_after_global_and_command_args() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[cargo]
+global_args = ["--locked"]
+
+[cargo.command_args]
+build = ["--profile", "ffi"]
+
+[targets.python]
+enabled = true
+cargo_args = ["--no-default-features", "--features=python"]
+"#,
+        );
+
+        assert_eq!(
+            config.cargo_args_for_target(TargetSection::Python, &["build"]),
+            vec![
+                "--locked".to_string(),
+                "--profile".to_string(),
+                "ffi".to_string(),
+                "--no-default-features".to_string(),
+                "--features=python".to_string(),
+            ]
+        );
+        assert_eq!(
+            config.cargo_args_for_target(TargetSection::Android, &["build"]),
+            vec![
+                "--locked".to_string(),
+                "--profile".to_string(),
+                "ffi".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_cargo_args_from_every_target_table() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.apple]
+cargo_args = ["apple"]
+
+[targets.android]
+cargo_args = ["android"]
+
+[targets.kotlin_multiplatform]
+cargo_args = ["kotlin_multiplatform"]
+
+[targets.wasm]
+cargo_args = ["wasm"]
+
+[targets.java]
+cargo_args = ["java"]
+
+[targets.dart]
+cargo_args = ["dart"]
+
+[targets.python]
+cargo_args = ["python"]
+
+[targets.csharp]
+cargo_args = ["csharp"]
+
+[targets.c]
+cargo_args = ["c"]
+"#,
+        );
+
+        [
+            (TargetSection::Apple, "apple"),
+            (TargetSection::Android, "android"),
+            (TargetSection::KotlinMultiplatform, "kotlin_multiplatform"),
+            (TargetSection::Wasm, "wasm"),
+            (TargetSection::Java, "java"),
+            (TargetSection::Dart, "dart"),
+            (TargetSection::Python, "python"),
+            (TargetSection::CSharp, "csharp"),
+            (TargetSection::C, "c"),
+        ]
+        .into_iter()
+        .for_each(|(section, expected)| {
+            assert_eq!(
+                config.cargo_args_for_target(section, &["build", "generate"]),
+                vec![expected.to_string()],
+                "{section:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn omits_empty_target_cargo_args_when_serializing() {
+        let config = parse_config(
+            r#"
+[package]
+name = "mylib"
+
+[targets.android]
+cargo_args = ["--features=kotlin"]
+"#,
+        );
+
+        let serialized = toml::to_string(&config).expect("serialize config");
+
+        assert_eq!(serialized.matches("cargo_args").count(), 1, "{serialized}");
     }
 
     #[test]
@@ -2524,6 +2645,7 @@ enabled = true
         );
         assert_eq!(config.csharp_package_id(), "my-lib");
         assert_eq!(config.csharp_namespace(), None);
+        assert_eq!(config.csharp_module_class(), None);
         assert_eq!(config.csharp_target_framework(), "net10.0");
         assert_eq!(
             config.csharp_requested_runtime_identifiers(),
@@ -2545,6 +2667,7 @@ output = "artifacts/csharp"
 package_output = "artifacts/nuget"
 package_id = "Company.MyLib"
 namespace = "Company.MyLib.Bindings"
+module_class = "MyLibApi"
 target_framework = "net9.0"
 runtime_identifiers = ["current", "linux-x64", "windows-aarch64"]
 "#,
@@ -2557,6 +2680,7 @@ runtime_identifiers = ["current", "linux-x64", "windows-aarch64"]
         );
         assert_eq!(config.csharp_package_id(), "Company.MyLib");
         assert_eq!(config.csharp_namespace(), Some("Company.MyLib.Bindings"));
+        assert_eq!(config.csharp_module_class(), Some("MyLibApi"));
         assert_eq!(config.csharp_target_framework(), "net9.0");
         assert_eq!(
             config.csharp_requested_runtime_identifiers(),
@@ -2678,6 +2802,19 @@ runtime_identifiers = []
             Err(ConfigError::Validation(message))
                 if message.contains("targets.csharp.runtime_identifiers must be non-empty")
         ));
+    }
+
+    #[test]
+    fn rejects_invalid_csharp_module_class() {
+        for name in ["", "Demo.Api", "123Demo", "Demo Api"] {
+            let mut config = parse_config("[package]\nname = \"demo\"");
+            config.targets.csharp.enabled = true;
+            config.targets.csharp.module_class = Some(name.to_owned());
+            assert!(
+                matches!(config.validate(), Err(ConfigError::Validation(message))
+                if message.contains("targets.csharp.module_class must be a C# identifier"))
+            );
+        }
     }
 
     #[test]

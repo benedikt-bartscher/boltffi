@@ -54,6 +54,51 @@ Experimental features:
 - `license` (string, optional): Package license identifier.
 - `repository` (string, optional): Repository URL.
 
+### `[cargo]` (optional)
+
+Extra arguments for the `cargo` invocations `boltffi` runs.
+
+- `global_args` (array of strings): Arguments for every cargo invocation.
+  - Default: `[]`
+- `command_args` (table of string arrays): Arguments keyed by `boltffi` command. `build` applies to `boltffi build` and `boltffi pack`; `build` and `generate` both apply to `boltffi generate`.
+  - Default: `{}`
+
+Each `[targets.<name>]` table listed below also accepts `cargo_args` (array of strings, default `[]`), applied wherever that target builds:
+
+| Table | Commands |
+|-------|----------|
+| `[targets.apple]` | `generate swift`, `build apple`, `pack apple` |
+| `[targets.android]` | `generate kotlin`, `build android`, `pack android` |
+| `[targets.kotlin_multiplatform]` | `generate kmp`, `pack kmp` |
+| `[targets.java]` | `generate java`, `pack java` |
+| `[targets.wasm]` | `generate typescript`, `build wasm`, `pack wasm` |
+| `[targets.dart]` | `generate dart`, `build dart`, `pack dart` |
+| `[targets.python]` | `generate python`, `pack python` |
+| `[targets.csharp]` | `generate csharp`, `pack csharp` |
+| `[targets.c]` | `generate c`, `pack c` |
+
+`generate all`, `build all`, `pack all`, and `release` apply each target's `cargo_args` to that target only.
+
+Some commands read a table other than the one their output suggests:
+
+- `generate header` reads no target table and uses only the `[cargo]` arguments. `pack android` passes `[targets.android].cargo_args` to its header step.
+- `generate kotlin` and `pack android` use `[targets.android]`.
+- `pack kmp` builds its Android libraries with `[targets.kotlin_multiplatform].cargo_args`, not `[targets.android]`.
+- `generate java` and `pack java` use `[targets.java]`, including for the Android output under `[targets.java.android]`.
+
+`cargo_args` is read only from the top-level tables above. Unknown keys in target tables are ignored, so `cargo_args` under a nested table such as `[targets.android.kotlin]` has no effect.
+
+Arguments are passed in this order: `global_args`, `command_args`, the target's `cargo_args`, then the CLI `--cargo-arg` values.
+
+```toml
+[cargo]
+global_args = ["--locked"]
+
+[targets.python]
+enabled = true
+cargo_args = ["--no-default-features", "--features=python"]
+```
+
 ## Targets
 
 All platform-specific configuration lives under `[targets.*]`. Each target can be independently enabled or disabled.
@@ -427,6 +472,11 @@ Controls npm package generation in `boltffi pack wasm`.
 - `namespace` (string, optional): C# namespace for generated sources.
   - Default: PascalCase of `{package.crate}` (or `{package.name}` when `package.crate` is unset).
   - Must be dot-separated C# identifiers, for example `CounterApp.Shared`.
+- `module_class` (string, optional): C# class containing generated free functions and constants.
+  - Default: PascalCase of the Rust crate name, preserving the existing API.
+  - Must be a C# identifier and must not conflict with an exported type, generated companion/runtime type, or `NativeMethods`.
+  - Its output filename must not differ from an exported type's filename only by case, so generation is safe on case-insensitive filesystems.
+  - For a crate named `demo` exporting a `Demo` record, set `module_class = "DemoApi"` to generate `DemoApi.MakeDemo()` alongside the `Demo` record.
 - `package_id` (string, optional): NuGet package ID.
   - Default: `{package.name}`
 - `target_framework` (string, optional): Target framework for the generated NuGet package project.

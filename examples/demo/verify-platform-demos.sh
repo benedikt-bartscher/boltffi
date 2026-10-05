@@ -80,7 +80,7 @@ pack_host_dart() {
     local overlay
     overlay="$(mktemp "${TMPDIR:-/tmp}/boltffi-dart-host.toml.XXXXXX")"
     printf '[targets.dart]\nnative_targets = ["%s"]\n' "$(host_dart_native_target)" >"$overlay"
-    run_boltffi --overlay "$overlay" pack dart --release
+    run_boltffi --cargo-arg=--features --cargo-arg=async-initializers --overlay "$overlay" pack dart --release
     rm -f "$overlay"
 }
 
@@ -172,7 +172,7 @@ for selected_platform in "${selected_platforms[@]}"; do
             run_step "kotlin test" gradle -p "$kotlin_dir" test
             ;;
         java)
-            run_step "pack java" run_boltffi pack java
+            run_step "pack java" run_boltffi --cargo-arg=--features --cargo-arg=async-initializers pack java
             run_step "java demo" "$java_dir/test-demo.sh" --auto
             ;;
         csharp)
@@ -185,10 +185,10 @@ for selected_platform in "${selected_platforms[@]}"; do
             ;;
         python)
             if [[ -n "$python_interpreter" ]]; then
-                run_step "pack python" run_boltffi pack python --release --python "$python_interpreter"
+                run_step "pack python" run_boltffi --cargo-arg=--features --cargo-arg=async-initializers pack python --release --python "$python_interpreter"
                 run_step "python demo" "$python_dir/test-demo.sh" --python "$python_interpreter"
             else
-                run_step "pack python" run_boltffi pack python --release
+                run_step "pack python" run_boltffi --cargo-arg=--features --cargo-arg=async-initializers pack python --release
                 run_step "python demo" "$python_dir/test-demo.sh"
             fi
             ;;
