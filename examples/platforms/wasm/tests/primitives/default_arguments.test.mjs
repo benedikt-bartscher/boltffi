@@ -1,6 +1,11 @@
 import { assert, demo } from "../support/index.mjs";
 
 export async function run() {
+  globalThis.demoCase("case:primitives.default_arguments.should_keep_required_arguments_after_defaults");
+  assert.equal(demo.addDefault(undefined, 10), 15);
+  assert.equal(demo.addDefault(undefined, 10, true), -15);
+  assert.equal(demo.addDefault(0, 10), 10);
+
   globalThis.demoCase("case:primitives.default_arguments.should_apply_omitted_scalar_and_string_defaults");
   assert.equal(demo.repeatGreeting("ada"), "hello ada, hello ada");
   assert.equal(demo.repeatGreeting("ada", undefined, undefined, true), "HELLO ADA, HELLO ADA");
@@ -51,6 +56,35 @@ export async function run() {
     assert.equal(textCounter.offset(), 41);
   } finally {
     textCounter.dispose();
+  }
+
+  const wideCounter = demo.DefaultedWideCounter.new();
+  try {
+    assert.equal(wideCounter.value(), 10n);
+  } finally {
+    wideCounter.dispose();
+  }
+
+  [0n, 5n, -9223372036854775808n, 9223372036854775807n].forEach((value) => {
+    const suppliedCounter = demo.DefaultedWideCounter.new(value);
+    try {
+      assert.equal(suppliedCounter.value(), value);
+    } finally {
+      suppliedCounter.dispose();
+    }
+  });
+
+  const originalWideCounter = demo.DefaultedWideCounter.new(20n);
+  try {
+    const adjustedCounter = demo.DefaultedWideCounter.withOffset(originalWideCounter);
+    try {
+      assert.equal(adjustedCounter.value(), 21n);
+      assert.throws(() => originalWideCounter.value(), /disposed/);
+    } finally {
+      adjustedCounter.dispose();
+    }
+  } finally {
+    originalWideCounter.dispose();
   }
 
   assert.deepEqual(

@@ -2,6 +2,13 @@ import Demo
 import XCTest
 
 final class DefaultArgumentsTests: DemoTestCase {
+    func testRequiredArgumentsAfterDefaults() {
+        demoCase("case:primitives.default_arguments.should_keep_required_arguments_after_defaults")
+        XCTAssertEqual(addDefault(right: 10), 15)
+        XCTAssertEqual(addDefault(right: 10, negate: true), -15)
+        XCTAssertEqual(addDefault(left: 0, right: 10), 10)
+    }
+
     final class Doubler: ValueCallback {
         func onValue(value: Int32) -> Int32 { value * 2 }
     }
@@ -45,6 +52,17 @@ final class DefaultArgumentsTests: DemoTestCase {
         let supplied = DefaultedCounter.integerLimits(lower: 0, upper: 1)
         XCTAssertEqual(supplied.lower, 0)
         XCTAssertEqual(supplied.upper, 1)
+    }
+
+    func testWideIntegerConstructorArguments() {
+        XCTAssertEqual(DefaultedWideCounter().value(), 10)
+        [0, 5, Int64.min, Int64.max].forEach { value in
+            XCTAssertEqual(DefaultedWideCounter(value: value).value(), value)
+        }
+        let counter = DefaultedWideCounter(value: 20)
+        XCTAssertEqual(DefaultedWideCounter(withOffset: counter).value(), 21)
+        let suppliedCounter = DefaultedWideCounter(value: 20)
+        XCTAssertEqual(DefaultedWideCounter(withOffset: suppliedCounter, step: 3).value(), 23)
     }
 
     func testFloatAndEnumArguments() {
