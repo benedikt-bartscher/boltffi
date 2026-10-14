@@ -45,6 +45,7 @@ pub struct Generation {
     python_package_version: Option<String>,
     python_native_library: Option<String>,
     csharp_namespace: Option<String>,
+    csharp_module_class: Option<String>,
     csharp_native_library: Option<String>,
     dart_package: Option<String>,
     dart_native_artifact: Option<String>,
@@ -98,6 +99,7 @@ impl Generation {
             python_package_version: None,
             python_native_library: None,
             csharp_namespace: None,
+            csharp_module_class: None,
             csharp_native_library: None,
             dart_package: None,
             dart_native_artifact: None,
@@ -407,6 +409,12 @@ impl Generation {
         self
     }
 
+    /// Sets the class containing generated C# free functions and constants.
+    pub fn csharp_module_class(mut self, module_class: Option<String>) -> Self {
+        self.csharp_module_class = module_class;
+        self
+    }
+
     /// Sets the native library artifact loaded by generated C# source.
     pub fn csharp_native_library(mut self, native_library: impl Into<String>) -> Self {
         self.csharp_native_library = Some(native_library.into());
@@ -441,7 +449,7 @@ impl Generation {
                 let bindings = self.bindings::<Native>()?;
                 self.render_native_bindings(target, &bindings)
             }
-            Target::Header => Err(GenerationError::UnsupportedTarget { target }),
+            Target::Header | Target::Ruby => Err(GenerationError::UnsupportedTarget { target }),
         }
     }
 
@@ -477,7 +485,7 @@ impl Generation {
             Target::CSharp => self.render_csharp_bindings(bindings),
             Target::Dart => self.render_dart_bindings(bindings),
             Target::C => self.render_c_bindings(bindings),
-            Target::Swift | Target::TypeScript | Target::Header => {
+            Target::Swift | Target::TypeScript | Target::Header | Target::Ruby => {
                 Err(GenerationError::UnsupportedTarget { target })
             }
         }
@@ -781,6 +789,10 @@ impl Generation {
             .transpose()
             .map_err(GenerationError::Render)?
             .unwrap_or_default();
+        let host = match self.csharp_module_class.as_deref() {
+            Some(name) => host.module_class(name).map_err(GenerationError::Render)?,
+            None => host,
+        };
         Ok(self
             .csharp_native_library
             .iter()

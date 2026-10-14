@@ -271,7 +271,7 @@ sealed class Frame {
         }
 
         internal override fun writeTo(writer: WireWriter) {
-            writer.writeU32(0.toUInt())
+            writer.writeU32(0u)
         }
     }
     data class Data(
@@ -282,7 +282,7 @@ sealed class Frame {
         }
 
         internal override fun writeTo(writer: WireWriter) {
-            writer.writeU32(1.toUInt())
+            writer.writeU32(1u)
             writer.writeBytes(this.payload)
         }
 
@@ -303,7 +303,7 @@ sealed class Frame {
         }
 
         internal override fun writeTo(writer: WireWriter) {
-            writer.writeU32(2.toUInt())
+            writer.writeU32(2u)
             writer.writeU32(this.field0)
             writer.writeLongArray(this.field1)
         }
@@ -329,7 +329,7 @@ sealed class Frame {
         }
 
         internal override fun writeTo(writer: WireWriter) {
-            writer.writeU32(3.toUInt())
+            writer.writeU32(3u)
             writer.writeString(this.name)
         }
     }
@@ -338,10 +338,10 @@ sealed class Frame {
         internal fun fromReader(reader: WireReader): Frame {
             val tag = reader.readU32()
             return when (tag) {
-                0.toUInt() -> Empty
-                1.toUInt() -> Data(reader.readBytes())
-                2.toUInt() -> Tagged(reader.readU32(), reader.readLongArray())
-                3.toUInt() -> Named(reader.readString())
+                0u -> Empty
+                1u -> Data(reader.readBytes())
+                2u -> Tagged(reader.readU32(), reader.readLongArray())
+                3u -> Named(reader.readString())
                 else -> throw IllegalArgumentException("unknown Frame tag: $tag")
             }
         }
