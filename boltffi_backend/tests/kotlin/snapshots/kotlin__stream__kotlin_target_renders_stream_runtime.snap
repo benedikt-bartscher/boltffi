@@ -339,9 +339,9 @@ internal class WireReader(private val bytes: ByteArray) {
     }
 
     private inline fun <T> readOptional(read: (WireReader) -> T): T? {
-        return when (readU8()) {
-            0.toUByte() -> null
-            1.toUByte() -> read(this)
+        return when (readU8().toInt()) {
+            0 -> null
+            1 -> read(this)
             else -> throw IllegalArgumentException("invalid optional wire tag")
         }
     }
@@ -601,10 +601,10 @@ internal class WireWriter(initialCapacity: Int) {
 
     private inline fun <T> writeOptional(value: T?, write: (WireWriter, T) -> Unit) {
         if (value == null) {
-            writeU8(0.toUByte())
+            writeU8(0u)
             return
         }
-        writeU8(1.toUByte())
+        writeU8(1u)
         write(this, value)
     }
 }
@@ -837,41 +837,38 @@ private object Native {
             return
         }
 
-        if (tryLoadOptionalDesktopLibrary(fallbackLibrary)) {
+        if (tryLoadDesktopLibrary(fallbackLibrary) == null) {
             preferredFailure = tryLoadDesktopLibrary(preferredLibrary)
             if (preferredFailure == null) {
                 return
             }
         }
 
-        throw preferredFailure
+        val resources = bundledLibraryResourceCandidates(System.mapLibraryName(preferredLibrary))
+        throw UnsatisfiedLinkError(
+            "Could not load native library '$preferredLibrary'\n" +
+                "Searched JVM resources ${resources.joinToString()} and java.library.path\n" +
+                "For Kotlin Multiplatform, run boltffi pack kmp --experimental and include src/jvmMain/resources\n" +
+                "For Android Kotlin bindings used on desktop, enable targets.android.kotlin.desktop_pack.enabled, " +
+                "run boltffi pack android and include desktopJniLibs in the JVM resource path " +
+                "or set targets.android.kotlin.desktop_pack.output to a JVM resource directory"
+        ).apply { initCause(preferredFailure) }
     }
 
     private fun tryLoadDesktopLibrary(libraryName: String): UnsatisfiedLinkError? {
-        try {
-            if (loadBundledLibraryIfPresent(libraryName) || loadExternalLibraryIfPresent(libraryName)) {
+        val bundledFailure = try {
+            if (loadBundledLibraryIfPresent(libraryName)) {
                 return null
             }
-            return UnsatisfiedLinkError("Could not load native library '$libraryName'")
+            null
         } catch (error: UnsatisfiedLinkError) {
-            return error
+            error
         }
-    }
-
-    private fun tryLoadOptionalDesktopLibrary(libraryName: String): Boolean {
-        return try {
-            loadBundledLibraryIfPresent(libraryName) || loadExternalLibraryIfPresent(libraryName)
-        } catch (_: UnsatisfiedLinkError) {
-            false
-        }
-    }
-
-    private fun loadExternalLibraryIfPresent(libraryName: String): Boolean {
         return try {
             System.loadLibrary(libraryName)
-            true
-        } catch (_: UnsatisfiedLinkError) {
-            false
+            null
+        } catch (error: UnsatisfiedLinkError) {
+            bundledFailure?.apply { addSuppressed(error) } ?: error
         }
     }
 
@@ -1022,22 +1019,24 @@ data class Point(
     }
 }
 
-class Engine internal constructor(internal val handle: Long) : AutoCloseable {
-    private val __boltffi_closed = java.util.concurrent.atomic.AtomicBoolean(false)
+class Engine internal constructor(private val __boltffi_handle: java.util.concurrent.atomic.AtomicLong) : AutoCloseable {
 
     override fun close() {
-        if (__boltffi_closed.compareAndSet(false, true)) {
+        val handle = __boltffi_handle.getAndSet(0L)
+        if (handle != 0L) {
             Native.boltffi_release_class_demo_engine(handle)
         }
     }
 
     internal fun __boltffiTakeHandle(): Long {
-        check(__boltffi_closed.compareAndSet(false, true)) { "Engine is closed" }
+        val handle = __boltffi_handle.getAndSet(0L)
+        check(handle != 0L) { "Engine is closed" }
         return handle
     }
 
     internal fun boltffiHandle(): Long {
-        check(!__boltffi_closed.get()) { "Engine is closed" }
+        val handle = __boltffi_handle.get()
+        check(handle != 0L) { "Engine is closed" }
         return handle
     }
 }

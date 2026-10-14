@@ -65,7 +65,7 @@ sealed class JobError : Exception() {
         }
 
         internal override fun writeTo(writer: WireWriter) {
-            writer.writeU32(0.toUInt())
+            writer.writeU32(0u)
             writer.writeU32(this.code)
         }
     }
@@ -75,7 +75,7 @@ sealed class JobError : Exception() {
         }
 
         internal override fun writeTo(writer: WireWriter) {
-            writer.writeU32(1.toUInt())
+            writer.writeU32(1u)
         }
     }
 
@@ -83,8 +83,8 @@ sealed class JobError : Exception() {
         internal fun fromReader(reader: WireReader): JobError {
             val tag = reader.readU32()
             return when (tag) {
-                0.toUInt() -> Refused(reader.readU32())
-                1.toUInt() -> Lost
+                0u -> Refused(reader.readU32())
+                1u -> Lost
                 else -> throw IllegalArgumentException("unknown JobError tag: $tag")
             }
         }
@@ -96,22 +96,24 @@ sealed class JobError : Exception() {
     }
 }
 
-class Jobs internal constructor(internal val handle: Long) : AutoCloseable {
-    private val __boltffi_closed = java.util.concurrent.atomic.AtomicBoolean(false)
+class Jobs internal constructor(private val __boltffi_handle: java.util.concurrent.atomic.AtomicLong) : AutoCloseable {
 
     override fun close() {
-        if (__boltffi_closed.compareAndSet(false, true)) {
+        val handle = __boltffi_handle.getAndSet(0L)
+        if (handle != 0L) {
             Native.boltffi_release_class_demo_jobs(handle)
         }
     }
 
     internal fun __boltffiTakeHandle(): Long {
-        check(__boltffi_closed.compareAndSet(false, true)) { "Jobs is closed" }
+        val handle = __boltffi_handle.getAndSet(0L)
+        check(handle != 0L) { "Jobs is closed" }
         return handle
     }
 
     internal fun boltffiHandle(): Long {
-        check(!__boltffi_closed.get()) { "Jobs is closed" }
+        val handle = __boltffi_handle.get()
+        check(handle != 0L) { "Jobs is closed" }
         return handle
     }
 }
