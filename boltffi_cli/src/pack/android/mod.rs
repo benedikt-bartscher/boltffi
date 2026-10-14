@@ -7,12 +7,11 @@ use crate::build::{
 use crate::cli::{CliError, Result};
 use crate::commands::generate::{GenerateOptions, GenerateTarget, run_generate_with_output};
 use crate::commands::pack::PackAndroidOptions;
-use crate::config::{Config, KotlinDesktopLoader};
+use crate::config::{Config, KotlinDesktopLoader, TargetSection};
 use crate::pack::PackError;
 use crate::pack::java::link::{
     JvmNativePackageLayout, build_jvm_native_library, compile_jni_library_with_layout,
 };
-use crate::pack::java::outputs::remove_stale_structured_jvm_outputs;
 use crate::pack::java::prepare_android_kotlin_jvm_packaging;
 use crate::pack::symbols::{
     ensure_debug_symbols_profile_has_debuginfo, ensure_existing_debug_symbol_artifacts_are_usable,
@@ -21,8 +20,8 @@ use crate::reporter::Reporter;
 use crate::target::{BuiltLibrary, Platform};
 
 use super::{
-    discover_built_libraries_for_targets, missing_built_libraries, print_cargo_line,
-    resolve_build_cargo_args,
+    discover_built_libraries_for_targets, missing_built_libraries, pack_generate_cargo_args,
+    print_cargo_line, resolve_build_cargo_args,
 };
 
 pub(crate) use self::link::{AndroidPackageLayout, AndroidPackager};
@@ -49,7 +48,11 @@ pub(crate) fn pack_android(
 
     ensure_android_kotlin_desktop_no_build_supported(config, options.execution.no_build)?;
 
-    let build_cargo_args = resolve_build_cargo_args(config, &options.execution.cargo_args);
+    let build_cargo_args = resolve_build_cargo_args(
+        config,
+        TargetSection::Android,
+        &options.execution.cargo_args,
+    );
     let binding_expansion = (!options.execution.no_build)
         .then(|| BindingExpansion::resolve(config, &build_cargo_args))
         .transpose()?;
@@ -88,7 +91,12 @@ pub(crate) fn pack_android(
                 target: GenerateTarget::Kotlin,
                 output: Some(config.android_kotlin_output()),
                 experimental: false,
-                cargo_args: build_cargo_args.clone(),
+                cargo_args: pack_generate_cargo_args(
+                    config,
+                    TargetSection::Android,
+                    &GenerateTarget::Kotlin,
+                    &options.execution.cargo_args,
+                ),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;
@@ -101,7 +109,12 @@ pub(crate) fn pack_android(
                 target: GenerateTarget::Header,
                 output: Some(config.android_header_output()),
                 experimental: false,
-                cargo_args: build_cargo_args.clone(),
+                cargo_args: pack_generate_cargo_args(
+                    config,
+                    TargetSection::Android,
+                    &GenerateTarget::Header,
+                    &options.execution.cargo_args,
+                ),
                 deny_skipped: options.execution.deny_skipped,
             },
         )?;
@@ -221,9 +234,9 @@ fn package_android_kotlin_desktop_natives(
         step.finish_success();
     }
 
-    remove_stale_structured_jvm_outputs(
-        &config.android_kotlin_desktop_pack_output(),
+    layout.remove_stale_host_artifacts(
         &prepared_jvm_packaging.host_targets,
+        binding_expansion.artifact_name(),
     )?;
 
     Ok(())
@@ -313,6 +326,28 @@ enabled = true
         assert!(layout.flat_output_root.is_none());
         assert!(!layout.strip_symbols);
         assert!(!layout.debug_symbols_enabled);
+    }
+
+    #[test]
+    fn android_kotlin_desktop_natives_can_be_packaged_into_jvm_resources() {
+        let config = parse_config(
+            r#"
+[package]
+name = "journey-bindings"
+
+[targets.android.kotlin.desktop_pack]
+enabled = true
+output = "../resources/native"
+"#,
+        );
+        let layout = android_kotlin_desktop_native_layout(&config).unwrap();
+
+        assert_eq!(
+            layout.native_output_root,
+            PathBuf::from("../resources/native")
+        );
+        assert_eq!(layout.jni_library_name.as_str(), "journey_bindings_jni");
+        assert!(should_package_android_kotlin_desktop_natives(&config));
     }
 
     #[test]
