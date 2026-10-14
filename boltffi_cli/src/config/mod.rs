@@ -663,7 +663,13 @@ impl Config {
     }
 
     pub fn android_kotlin_desktop_pack_output(&self) -> PathBuf {
-        self.targets.android.output.join("desktopJniLibs")
+        self.targets
+            .android
+            .kotlin
+            .desktop_pack
+            .output
+            .clone()
+            .unwrap_or_else(|| self.targets.android.output.join("desktopJniLibs"))
     }
 
     pub fn android_debug_symbols_enabled(&self) -> bool {
@@ -775,6 +781,7 @@ impl Config {
             Target::Python => self.is_python_enabled(),
             Target::CSharp => self.is_csharp_enabled(),
             Target::C => self.is_c_enabled(),
+            Target::Ruby => false,
         }
     }
 

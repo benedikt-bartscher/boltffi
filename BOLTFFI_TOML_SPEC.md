@@ -181,6 +181,15 @@ Uuid = { type = "UUID", conversion = "uuid_string" }
 - `skip_package_swift` (bool, optional): Skip generating `Package.swift`.
   - Default: `false`
 
+Generated Apple packages include an `FFI/` C target for module discovery. Keep
+this directory with `Package.swift`, including when publishing remote packages.
+The target exposes the FFI module and depends on an internal `{ffi_module_name}Binary`
+target. Static XCFramework headers contain `{ffi_module_name}.modulemap` so separate
+libraries can share Xcode's build products directory. The generated package supplies
+the discoverable module map to downstream Swift targets, including Xcode's explicit
+module scanner. Consumers of a bare XCFramework or a hand-written manifest must
+configure module discovery themselves.
+
 ### `[targets.apple.debug_symbols]` (optional)
 
 Debug information for Apple slice libraries collected by `boltffi pack apple`.
@@ -237,7 +246,13 @@ Debug information for Apple slice libraries collected by `boltffi pack apple`.
   - Default: `false`
   - Requires `desktop_loader = "bundled"` to produce desktop native resources.
   - Uses `[targets.java.jvm].host_targets` to select desktop host targets.
-  - Output: `{targets.android.output}/desktopJniLibs/<host-target>/`
+  - Output: `{desktop_pack.output}/<host-target>/`
+- `desktop_pack.output` (path, optional): Directory for packaged desktop JNI libraries and any required Rust shared libraries
+  - Default: `{targets.android.output}/desktopJniLibs`
+  - Relative paths are resolved from the project root, absolute paths are used directly
+  - Each host writes into its `<host-target>/` directory
+  - Use an application resource directory or add this output directory to the JVM resource path
+  - When the host selection narrows, cleanup removes only this package's native libraries and debug sidecars, other packages and application resources are preserved
 - `api_style` (`top_level` | `module_object`): How functions are exposed.
   - Default: `top_level`
 - `factory_style` (`constructors` | `companion_methods`): How factory constructors are exposed.
