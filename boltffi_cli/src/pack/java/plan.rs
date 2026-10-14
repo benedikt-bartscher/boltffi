@@ -9,7 +9,7 @@ use crate::cli::{CliError, Result};
 use crate::commands::generate::java::TargetGeneration;
 use crate::commands::generate::run_generate_java_with_generations;
 use crate::commands::pack::{PackExecutionOptions, PackJavaOptions};
-use crate::config::{Config, DebugSymbolsBundle, DebugSymbolsFormat};
+use crate::config::{Config, DebugSymbolsBundle, DebugSymbolsFormat, TargetSection};
 use crate::pack::resolve_build_cargo_args;
 use crate::pack::symbols::{
     DebugSymbolArtifact, DebugSymbolArtifactKind, ensure_debug_symbols_profile_has_debuginfo,
@@ -20,13 +20,12 @@ use crate::target::JavaHostTarget;
 use crate::toolchain::NativeHostToolchain;
 
 use super::link::{
-    build_jvm_native_library, compile_jni_library, resolve_jni_include_directories,
-    validate_desktop_jni_symbol_stripping_for,
+    JvmNativePackageLayout, build_jvm_native_library, compile_jni_library,
+    resolve_jni_include_directories, validate_desktop_jni_symbol_stripping_for,
 };
 use super::outputs::{
     remove_stale_flat_jvm_outputs_if_current_host_unrequested,
     remove_stale_requested_jvm_shared_library_copies_after_success,
-    remove_stale_structured_jvm_outputs,
 };
 
 #[derive(Debug, Clone)]
@@ -125,7 +124,8 @@ pub(crate) fn prepare_java_pack(config: &Config, options: PackJavaOptions) -> Re
         options.experimental,
         "pack java",
     )?;
-    let build_cargo_args = resolve_build_cargo_args(config, &options.execution.cargo_args);
+    let build_cargo_args =
+        resolve_build_cargo_args(config, TargetSection::Java, &options.execution.cargo_args);
     let expansion = BindingExpansion::resolve(config, &build_cargo_args)?;
     let packaging = prepare_java_packaging(
         config,
@@ -212,7 +212,8 @@ fn execute_java_pack(config: &Config, plan: JavaPackPlan, reporter: &Reporter) -
         &packaged_outputs,
         artifact_name,
     )?;
-    remove_stale_structured_jvm_outputs(&config.java_jvm_output().join("native"), &host_targets)?;
+    JvmNativePackageLayout::java(config, artifact_name)?
+        .remove_stale_host_artifacts(&host_targets, artifact_name)?;
     remove_stale_flat_jvm_outputs_if_current_host_unrequested(
         &config.java_jvm_output(),
         JavaHostTarget::current(),
@@ -234,13 +235,14 @@ fn prepare_java_packaging(
     let prepared = prepare_jvm_packaging_matrix(
         config,
         release,
+        TargetSection::Java,
         cargo_args,
         config.java_jvm_strip_symbols(),
         command_name,
         binding_expansion,
     )?;
     if config.java_jvm_debug_symbols_enabled() {
-        let build_cargo_args = resolve_build_cargo_args(config, cargo_args);
+        let build_cargo_args = resolve_build_cargo_args(config, TargetSection::Java, cargo_args);
         ensure_debug_symbols_profile_has_debuginfo(
             &build_cargo_args,
             &prepared.packaging_targets[0].cargo_context.build_profile,
@@ -265,6 +267,7 @@ pub(crate) fn prepare_kmp_jvm_packaging(
     prepare_jvm_packaging_matrix(
         config,
         release,
+        TargetSection::KotlinMultiplatform,
         cargo_args,
         false,
         "pack kmp",
@@ -281,6 +284,7 @@ pub(crate) fn prepare_android_kotlin_jvm_packaging(
     prepare_jvm_packaging_matrix(
         config,
         release,
+        TargetSection::Android,
         cargo_args,
         false,
         "pack android",
@@ -291,12 +295,13 @@ pub(crate) fn prepare_android_kotlin_jvm_packaging(
 fn prepare_jvm_packaging_matrix(
     config: &Config,
     release: bool,
+    section: TargetSection,
     cargo_args: &[String],
     strip_symbols: bool,
     command_name: &str,
     binding_expansion: Option<&BindingExpansion>,
 ) -> Result<PreparedJvmPackaging> {
-    let build_cargo_args = resolve_build_cargo_args(config, cargo_args);
+    let build_cargo_args = resolve_build_cargo_args(config, section, cargo_args);
     ensure_jvm_pack_cargo_args_supported(&build_cargo_args, command_name)?;
     let build_profile = crate::build::resolve_build_profile(release, &build_cargo_args);
     let host_targets = resolve_java_host_targets_for_packaging(config)?;
