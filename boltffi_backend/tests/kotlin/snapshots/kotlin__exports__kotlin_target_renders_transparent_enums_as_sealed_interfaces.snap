@@ -125,18 +125,18 @@ sealed interface Envelope {
         internal fun writeTo(value: Envelope, writer: WireWriter) {
             when (value) {
                 is Unset -> {
-                    writer.writeU32(0.toUInt())
+                    writer.writeU32(0u)
                 }
                 is com.boltffi.demo.Ping -> {
-                    writer.writeU32(1.toUInt())
+                    writer.writeU32(1u)
                     value.writeTo(writer)
                 }
                 is com.boltffi.demo.Note -> {
-                    writer.writeU32(2.toUInt())
+                    writer.writeU32(2u)
                     value.writeTo(writer)
                 }
                 is Raw -> {
-                    writer.writeU32(3.toUInt())
+                    writer.writeU32(3u)
                     writer.writeString(value.field0)
                 }
             }
@@ -156,10 +156,10 @@ sealed interface Envelope {
         internal fun fromReader(reader: WireReader): Envelope {
             val tag = reader.readU32()
             return when (tag) {
-                0.toUInt() -> Unset
-                1.toUInt() -> com.boltffi.demo.Ping.fromReader(reader)
-                2.toUInt() -> com.boltffi.demo.Note.fromReader(reader)
-                3.toUInt() -> Raw(reader.readString())
+                0u -> Unset
+                1u -> com.boltffi.demo.Ping.fromReader(reader)
+                2u -> com.boltffi.demo.Note.fromReader(reader)
+                3u -> Raw(reader.readString())
                 else -> throw IllegalArgumentException("unknown Envelope tag: $tag")
             }
         }
@@ -187,11 +187,11 @@ sealed interface Reply {
         internal fun writeTo(value: Reply, writer: WireWriter) {
             when (value) {
                 is com.boltffi.demo.Ping -> {
-                    writer.writeU32(0.toUInt())
+                    writer.writeU32(0u)
                     value.writeTo(writer)
                 }
                 is Ack -> {
-                    writer.writeU32(1.toUInt())
+                    writer.writeU32(1u)
                 }
             }
         }
@@ -210,8 +210,8 @@ sealed interface Reply {
         internal fun fromReader(reader: WireReader): Reply {
             val tag = reader.readU32()
             return when (tag) {
-                0.toUInt() -> com.boltffi.demo.Ping.fromReader(reader)
-                1.toUInt() -> Ack
+                0u -> com.boltffi.demo.Ping.fromReader(reader)
+                1u -> Ack
                 else -> throw IllegalArgumentException("unknown Reply tag: $tag")
             }
         }

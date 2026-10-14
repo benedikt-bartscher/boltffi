@@ -14,11 +14,10 @@ use crate::commands::generate::{
     run_generate_c_header_with_manifest, run_generate_kmp_with_manifest,
 };
 use crate::commands::pack::PackKmpOptions;
-use crate::config::Config;
+use crate::config::{Config, TargetSection};
 use crate::pack::PackError;
 use crate::pack::android::{AndroidBindingMode, AndroidPackager, build_android_targets};
 use crate::pack::java::link::{build_jvm_native_library, compile_jni_library_with_layout};
-use crate::pack::java::outputs::remove_stale_structured_jvm_outputs;
 use crate::pack::java::prepare_kmp_jvm_packaging;
 use crate::pack::{missing_built_libraries, resolve_build_cargo_args};
 use crate::reporter::Reporter;
@@ -44,7 +43,11 @@ pub(crate) fn pack_kmp(
 
     reporter.section("🧩", "Packing Kotlin Multiplatform");
 
-    let build_cargo_args = resolve_build_cargo_args(config, &options.execution.cargo_args);
+    let build_cargo_args = resolve_build_cargo_args(
+        config,
+        TargetSection::KotlinMultiplatform,
+        &options.execution.cargo_args,
+    );
     let selected_crate = BindingExpansion::resolve(config, &build_cargo_args)?;
 
     let step = reporter.step("Validating JVM toolchains");
@@ -141,9 +144,9 @@ pub(crate) fn pack_kmp(
         step.finish_success();
     }
 
-    remove_stale_structured_jvm_outputs(
-        plan.layout().jvm_native_resource_root(),
+    kmp_jvm_layout.remove_stale_host_artifacts(
         &plan.jvm_packaging().host_targets,
+        selected_crate.artifact_name(),
     )?;
 
     reporter.finish();
@@ -990,10 +993,6 @@ module_name = "Demo"
             &PathBuf::from("dist/kmp/src/jvmMain/c")
         );
         assert_eq!(
-            layout.jvm_native_resource_root(),
-            &PathBuf::from("dist/kmp/src/jvmMain/resources/native")
-        );
-        assert_eq!(
             layout.support_report_path(),
             &PathBuf::from("dist/kmp/boltffi-kmp-support.json")
         );
@@ -1033,10 +1032,6 @@ module_name = "Demo"
         assert_eq!(
             layout.jvm_jni_dir(),
             &PathBuf::from("dist/kmp/src/jvmMain/c")
-        );
-        assert_eq!(
-            layout.jvm_native_resource_root(),
-            &PathBuf::from("dist/kmp/src/jvmMain/resources/native")
         );
         assert_eq!(jvm_layout.jni_dir, PathBuf::from("dist/kmp/src/jvmMain/c"));
         assert_eq!(jvm_layout.header_name, "demo");
