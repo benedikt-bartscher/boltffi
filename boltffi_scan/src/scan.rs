@@ -2226,6 +2226,17 @@ mod tests {
     }
 
     #[test]
+    fn thiserror_helpers_do_not_export_unmarked_types() {
+        let contract = scan(
+            "#[derive(Debug, thiserror::Error)] \
+             #[error(\"request failed: {message}\")] \
+             pub struct ServiceError { pub message: String }",
+        );
+
+        assert!(contract.records.is_empty());
+    }
+
+    #[test]
     fn references_to_error_types_resolve_like_any_value_type() {
         let contract = scan(
             "#[error] pub enum ParseError { Eof } \

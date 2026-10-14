@@ -2549,7 +2549,7 @@ mod tests {
                 pub fn answer() -> u32 {
                     42
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_answer() -> u32 {
                     answer()
@@ -2579,7 +2579,7 @@ mod tests {
                 pub fn syntax_payload() -> u32 {
                     42
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_http_request() -> u32 {
                     HTTPRequest()
@@ -2609,7 +2609,7 @@ mod tests {
                 pub fn syntax_payload(value: u32) -> u32 {
                     value
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_syntax_payload(
                     HTTPCode: u32
@@ -2641,7 +2641,7 @@ mod tests {
                 pub fn answer() -> u32 {
                     42
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 extern "C" fn boltffi_function_demo_answer() -> u32 {
                     answer()
@@ -2671,7 +2671,7 @@ mod tests {
                 pub fn year(when: Timestamp) -> u32 {
                     when.year()
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_year(
                     __boltffi_when_ptr: *const u8,
@@ -4124,7 +4124,7 @@ mod tests {
                 pub fn stamp() -> Timestamp {
                     Timestamp::now()
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_stamp() -> ::boltffi::__private::FfiBuf {
                     let __boltffi_result = stamp();
@@ -4300,7 +4300,7 @@ mod tests {
                 pub fn answer() -> u32 {
                     42
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub(in crate) extern "C" fn boltffi_function_demo_answer() -> u32 {
                     answer()
@@ -4380,7 +4380,7 @@ mod tests {
                 pub fn answer() -> u32 {
                     42
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_answer() -> u32 {
                     answer()
@@ -4446,14 +4446,14 @@ mod tests {
                 pub async fn answer() -> u32 {
                     42
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_answer() -> ::boltffi::__private::RustFutureHandle {
                     ::boltffi::__private::rustfuture::rust_future_new(async move {
                         answer().await
                     })
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_answer_poll(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4468,7 +4468,7 @@ mod tests {
                         )
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_answer_complete(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4493,7 +4493,7 @@ mod tests {
                         }
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_answer_panic_message(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4503,7 +4503,7 @@ mod tests {
                         None => ::boltffi::__private::FfiBuf::empty(),
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_answer_cancel(
                     handle: ::boltffi::__private::RustFutureHandle
@@ -4512,7 +4512,7 @@ mod tests {
                         ::boltffi::__private::rustfuture::rust_future_cancel::<u32>(handle)
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_answer_free(
                     handle: ::boltffi::__private::RustFutureHandle
@@ -4546,14 +4546,14 @@ mod tests {
                 pub async fn greet() -> String {
                     String::from("hello")
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_greet() -> ::boltffi::__private::RustFutureHandle {
                     ::boltffi::__private::rustfuture::rust_future_new(async move {
                         greet().await
                     })
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_greet_poll(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4568,7 +4568,7 @@ mod tests {
                         )
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_greet_complete(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4593,7 +4593,7 @@ mod tests {
                         }
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_greet_panic_message(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4603,7 +4603,7 @@ mod tests {
                         None => ::boltffi::__private::FfiBuf::empty(),
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_greet_cancel(
                     handle: ::boltffi::__private::RustFutureHandle
@@ -4612,7 +4612,7 @@ mod tests {
                         ::boltffi::__private::rustfuture::rust_future_cancel::<String>(handle)
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_greet_free(
                     handle: ::boltffi::__private::RustFutureHandle
@@ -4647,14 +4647,14 @@ mod tests {
                 pub async fn try_count() -> Result<i32, String> {
                     Ok(7)
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_try_count() -> ::boltffi::__private::RustFutureHandle {
                     ::boltffi::__private::rustfuture::rust_future_new(async move {
                         try_count().await
                     })
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_try_count_poll(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4669,7 +4669,7 @@ mod tests {
                         )
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_try_count_complete(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4711,7 +4711,7 @@ mod tests {
                         }
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_try_count_panic_message(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4721,7 +4721,7 @@ mod tests {
                         None => ::boltffi::__private::FfiBuf::empty(),
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_try_count_cancel(
                     handle: ::boltffi::__private::RustFutureHandle
@@ -4730,7 +4730,7 @@ mod tests {
                         ::boltffi::__private::rustfuture::rust_future_cancel::<#rust_return_type>(handle)
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_try_count_free(
                     handle: ::boltffi::__private::RustFutureHandle
@@ -4852,7 +4852,7 @@ mod tests {
                 pub async fn name_len(name: String) -> u32 {
                     name.len() as u32
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_name_len(
                     __boltffi_name_ptr: *const u8,
@@ -4885,7 +4885,7 @@ mod tests {
                         name_len(name).await
                     })
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_name_len_poll(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4900,7 +4900,7 @@ mod tests {
                         )
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_name_len_complete(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4925,7 +4925,7 @@ mod tests {
                         }
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_name_len_panic_message(
                     handle: ::boltffi::__private::RustFutureHandle,
@@ -4935,7 +4935,7 @@ mod tests {
                         None => ::boltffi::__private::FfiBuf::empty(),
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_name_len_cancel(
                     handle: ::boltffi::__private::RustFutureHandle
@@ -4944,7 +4944,7 @@ mod tests {
                         ::boltffi::__private::rustfuture::rust_future_cancel::<u32>(handle)
                     }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_async_function_demo_name_len_free(
                     handle: ::boltffi::__private::RustFutureHandle
@@ -5132,7 +5132,7 @@ mod tests {
             expansion_string(&tokens),
             quote! {
                 pub fn ping() {}
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_ping() {
                     ping();
@@ -5162,7 +5162,7 @@ mod tests {
                 pub fn norm(point: Point) -> f64 {
                     point.x
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_norm(
                     point: <Point as ::boltffi::__private::Passable>::In
@@ -5242,7 +5242,7 @@ mod tests {
                     point.x += 1.0;
                     point.x
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_shift(
                     point: *mut <Point as ::boltffi::__private::Passable>::In
@@ -5332,7 +5332,7 @@ mod tests {
                 pub fn bump(count: &mut i32) {
                     *count += 1;
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_bump(
                     count: i32
@@ -5366,7 +5366,7 @@ mod tests {
                 pub fn name_len(name: String) -> u32 {
                     name.len() as u32
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_name_len(
                     __boltffi_name_ptr: *const u8,
@@ -5422,7 +5422,7 @@ mod tests {
                 pub fn name_len(name: &str) -> u32 {
                     name.len() as u32
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_name_len(
                     __boltffi_name_ptr: *const u8,
@@ -5479,7 +5479,7 @@ mod tests {
                 pub fn rewrite(name: &mut str) -> u32 {
                     name.len() as u32
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_rewrite(
                     __boltffi_name_ptr: *const u8,
@@ -5748,7 +5748,7 @@ mod tests {
             expansion_string(&tokens),
             quote! {
                 pub fn set_count(count: Option<i32>) {}
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_set_count(
                     __boltffi_count_ptr: *const u8,
@@ -5798,7 +5798,7 @@ mod tests {
                 pub fn name_score(profile: Profile) -> u32 {
                     profile.name.len() as u32
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_name_score(
                     __boltffi_profile_ptr: *const u8,
@@ -5854,7 +5854,7 @@ mod tests {
                 pub fn rename(profile: &mut Profile) -> u32 {
                     profile.name.len() as u32
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_rename(
                     __boltffi_profile_ptr: *const u8,
@@ -5925,7 +5925,7 @@ mod tests {
                 pub fn open(engine: Engine) -> Option<Engine> {
                     Some(engine)
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_open(
                     engine: u64
@@ -7111,7 +7111,7 @@ mod tests {
             expansion_string(&tokens),
             quote! {
                 pub fn listen(listener: Box<dyn Listener>) {}
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_listen(
                     listener: ::boltffi::__private::CallbackHandle
@@ -7959,7 +7959,7 @@ mod tests {
                 pub fn make_listener() -> Box<dyn Listener> {
                     unimplemented!()
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_make_listener()
                     -> ::boltffi::__private::CallbackHandle
@@ -7992,7 +7992,7 @@ mod tests {
                 pub fn shared_listener() -> std::sync::Arc<dyn Listener> {
                     unimplemented!()
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_shared_listener()
                     -> ::boltffi::__private::CallbackHandle
@@ -8098,7 +8098,7 @@ mod tests {
                 pub fn try_make_listener() -> Result<Box<dyn Listener>, String> {
                     unimplemented!()
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_try_make_listener(
                     __boltffi_return_out: *mut ::boltffi::__private::CallbackHandle
@@ -8147,7 +8147,7 @@ mod tests {
                 pub fn render(callback: impl Fn(u32) -> u32) -> u32 {
                     callback(41)
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_apply(
                     __boltffi_callback_call: unsafe extern "C" fn(*mut ::core::ffi::c_void, u32) -> u32,
@@ -9088,7 +9088,7 @@ mod tests {
                 pub fn try_open() -> Result<Engine, String> {
                     Ok(Engine)
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_try_open(
                     __boltffi_return_out: *mut u64
@@ -9169,7 +9169,7 @@ mod tests {
                 pub fn sum(values: Vec<u32>) -> u32 {
                     values.into_iter().sum()
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_sum(
                     __boltffi_values_ptr: *const u32,
@@ -9212,7 +9212,7 @@ mod tests {
                 pub fn count_points(points: Vec<Point>) -> u32 {
                     points.len() as u32
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_count_points(
                     __boltffi_points_ptr: *const u8,
@@ -9268,7 +9268,7 @@ mod tests {
                 pub fn origin() -> Point {
                     Point { x: 0.0 }
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_origin() -> <Point as ::boltffi::__private::Passable>::Out {
                     <Point as ::boltffi::__private::Passable>::pack(origin())
@@ -9338,7 +9338,7 @@ mod tests {
                 pub fn try_count() -> Result<i32, String> {
                     Ok(7)
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn boltffi_function_demo_try_count(
                     __boltffi_return_out: *mut i32
@@ -9471,7 +9471,7 @@ mod tests {
                 pub fn maybe_count() -> Option<i32> {
                     Some(7)
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_maybe_count() -> ::boltffi::__private::FfiBuf {
                     let __boltffi_result: Option<i32> = maybe_count();
@@ -9578,7 +9578,7 @@ mod tests {
                 pub fn numbers() -> Vec<i32> {
                     vec![1, 2, 3]
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_numbers() -> ::boltffi::__private::FfiBuf {
                     let __boltffi_result = numbers();
@@ -9648,7 +9648,7 @@ mod tests {
                 pub fn greet() -> String {
                     String::from("hello")
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_greet() -> ::boltffi::__private::FfiBuf {
                     let __boltffi_result: String = greet();
@@ -9710,7 +9710,7 @@ mod tests {
                 pub fn payload() -> Vec<u8> {
                     vec![1, 2, 3]
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
                 #[unsafe(no_mangle)]
                 pub extern "C" fn boltffi_function_demo_payload() -> ::boltffi::__private::FfiBuf {
                     let __boltffi_result: Vec<u8> = payload();
