@@ -794,7 +794,7 @@ This flow does the work a Python package needs.
 1. regenerates the Python source package unless `--regenerate false`
 2. builds or reuses the host `cdylib`
 3. stages the shared library into the generated package
-4. builds a wheel with `python -m pip wheel`
+4. builds a wheel with `python -m pip wheel`; without `--release` the C extension is compiled unoptimized (`-O0`) like the debug `cdylib`, unless `CFLAGS` is set
 
 ### Configuration
 
@@ -834,6 +834,8 @@ The shared library filename changes per host.
 - macOS: `.dylib`
 - Linux: `.so`
 - Windows: `.dll`
+
+setuptools' `build/` directory and the package's `.egg-info` are removed before each wheel build, so every wheel is built from the current sources; `targets.python.wheel.output` must therefore lie outside them. A wheel missing the compiled `_native` extension or the shared library fails the pack.
 
 ### Interpreter Selection
 

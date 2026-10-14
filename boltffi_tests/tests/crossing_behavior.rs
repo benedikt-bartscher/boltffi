@@ -651,7 +651,26 @@ mod closures {
 }
 
 mod results {
+    use std::error::Error;
+
     use super::*;
+
+    #[test]
+    fn thiserror_record_errors_cross_the_ffi_boundary() {
+        let mut value = 0;
+        let success =
+            unsafe { boltffi_function_boltffi_tests_results_try_service(false, &mut value) };
+        assert!(success.is_empty());
+        assert_eq!(value, 42);
+
+        let failure =
+            unsafe { boltffi_function_boltffi_tests_results_try_service(true, &mut value) };
+        let error = decode_buf::<FixtureServiceError>(failure);
+        let rust_error: &dyn Error = &error;
+
+        assert_eq!(error.message, "unavailable");
+        assert_eq!(rust_error.to_string(), "request failed: unavailable");
+    }
 
     #[test]
     fn fallible_direct_and_encoded_success_values_use_out_pointers() {

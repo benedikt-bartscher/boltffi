@@ -429,7 +429,11 @@ fn lower_native_function_plan_with_bridge(
             if !param_names.insert(name.clone()) {
                 return Err(format!("duplicate Kotlin parameter name {name}"));
             }
-            Ok(KmpParamPlan::new(name, KmpTypePlan::Primitive(*primitive)))
+            let parameter = KmpParamPlan::new(name, KmpTypePlan::Primitive(*primitive));
+            Ok(match param.meta().default() {
+                Some(default) => parameter.with_default(default.clone()),
+                None => parameter,
+            })
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let returns = match callable.returns().plan() {
@@ -612,10 +616,12 @@ fn primitive_has_direct_jvm_carrier(primitive: Primitive) -> bool {
 #[cfg(test)]
 mod tests {
     use boltffi_ast::PackageInfo;
-    use boltffi_binding::{Bindings, Decl, Native, lower as lower_bindings};
+    use boltffi_binding::{
+        Bindings, Decl, DefaultValue, IntegerValue, Native, lower as lower_bindings,
+    };
 
     use super::{
-        super::plan::{KmpPlatform, KmpSupportMode},
+        super::plan::{KmpApiBody, KmpPlatform, KmpSupportMode},
         KmpLowerError, KmpLowerer, KmpLoweringOptions,
     };
 
@@ -656,6 +662,40 @@ mod tests {
         assert_eq!(module.common().apis()[0].name(), "add");
         assert_eq!(module.support_report().admitted_apis().len(), 1);
         assert!(module.support_report().rejected_apis().is_empty());
+    }
+
+    #[test]
+    fn lowerer_preserves_defaults_and_required_parameters() {
+        let module = super::lower(&bindings(
+            r#"
+            #[export]
+            pub fn add(
+                #[boltffi::default(5)] left: i32,
+                right: i32,
+                #[boltffi::default(false)] negate: bool,
+            ) -> i32 {
+                let sum = left + right;
+                if negate { -sum } else { sum }
+            }
+            "#,
+        ))
+        .expect("defaulted primitive function should lower");
+        let KmpApiBody::Function(function) = module.common().apis()[0].body() else {
+            panic!("lowered function should have a function body");
+        };
+
+        assert_eq!(
+            function
+                .params()
+                .iter()
+                .map(|parameter| parameter.default())
+                .collect::<Vec<_>>(),
+            vec![
+                Some(&DefaultValue::Integer(IntegerValue::new(5))),
+                None,
+                Some(&DefaultValue::Bool(false)),
+            ]
+        );
     }
 
     #[test]
