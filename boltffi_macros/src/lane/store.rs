@@ -20,7 +20,9 @@ pub struct Store {
     modified: SystemTime,
     contents: RecordStore,
     records: Vec<RawSourceRecord>,
-    by_fragment: HashMap<String, usize>,
+    /// By crate and fragment: crates of one build can declare the same fragment, such as
+    /// two that compile one source file, and each reads its own record.
+    by_fragment: HashMap<(String, String), usize>,
     by_declaration: HashMap<String, usize>,
 }
 
@@ -107,7 +109,10 @@ impl Store {
         let by_fragment = records
             .iter()
             .enumerate()
-            .map(|(index, record)| (String::from_utf8_lossy(&record.json).into_owned(), index))
+            .map(|(index, record)| {
+                let fragment = String::from_utf8_lossy(&record.json).into_owned();
+                ((crate_of(record).to_owned(), fragment), index)
+            })
             .collect();
         let by_declaration = records
             .iter()
@@ -165,9 +170,14 @@ impl Store {
     }
 
     fn record(&self, fragment: &SourceFragment) -> Option<&RawSourceRecord> {
+        self.record_in(&crate_name().ok()?, fragment)
+    }
+
+    /// The record crate `krate` stored for `fragment`.
+    fn record_in(&self, krate: &str, fragment: &SourceFragment) -> Option<&RawSourceRecord> {
         let json = serde_json::to_string(fragment).ok()?;
         self.by_fragment
-            .get(&json)
+            .get(&(krate.to_owned(), json))
             .map(|index| &self.records[*index])
     }
 
@@ -356,7 +366,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use boltffi_ast::PackageInfo;
-    use boltffi_binding::{RawSourceRecord, RecordStore};
+    use boltffi_binding::{RawSourceRecord, RecordStore, SourceFragment};
 
     use super::Store;
 
@@ -379,6 +389,42 @@ mod tests {
             .open(path)
             .and_then(|file| file.set_modified(modified))
             .expect("the store's modification time is set");
+    }
+
+    #[test]
+    fn each_crate_reads_its_own_record_of_a_fragment_both_declare() {
+        let fragment = SourceFragment::InternedStringPool {
+            id: "$self::NAMES".to_owned(),
+            values: vec!["shared".to_owned()],
+        };
+        let json = serde_json::to_vec(&fragment).expect("the fragment serializes");
+        let declared_in = |module: &str| RawSourceRecord {
+            package: PackageInfo::new("demo", None),
+            module: module.to_owned(),
+            slots: Vec::new(),
+            json: json.clone(),
+        };
+        let path = std::env::temp_dir().join(format!(
+            "boltffi-record-store-crates-{}.json",
+            std::process::id()
+        ));
+        write(
+            &path,
+            &[declared_in("first::shared"), declared_in("second::shared")],
+            SystemTime::UNIX_EPOCH,
+        );
+        let store = Store::load(path.clone()).expect("the store loads");
+        fs::remove_file(&path).expect("the store is removed");
+
+        for krate in ["first", "second"] {
+            assert_eq!(
+                store
+                    .record_in(krate, &fragment)
+                    .map(|record| record.module.as_str()),
+                Some(format!("{krate}::shared").as_str())
+            );
+        }
+        assert!(store.record_in("third", &fragment).is_none());
     }
 
     #[test]
