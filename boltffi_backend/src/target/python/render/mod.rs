@@ -579,11 +579,19 @@ impl<'bindings> Package<'bindings> {
             .collect()
     }
 
+    /// The enum classes, C-style ones first: a data enum variant's field can default to a
+    /// C-style member, which the class body evaluates, and a C-style enum refers to no data
+    /// enum when its class is defined.
     fn enums(&self) -> Result<Vec<EnumClass>> {
-        self.declarations
+        let (c_style, data): (Vec<_>, Vec<_>) = self
+            .declarations
             .enums
             .iter()
             .copied()
+            .partition(|enumeration| matches!(enumeration, EnumDecl::CStyle(_)));
+        c_style
+            .into_iter()
+            .chain(data)
             .map(|enumeration| match enumeration {
                 EnumDecl::CStyle(declared) => EnumClass::from_c_style(declared, self),
                 EnumDecl::Data(declared) => EnumClass::from_data(declared, self),

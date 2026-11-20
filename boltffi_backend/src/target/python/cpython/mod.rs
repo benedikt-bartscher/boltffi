@@ -869,6 +869,39 @@ mod tests {
     }
 
     #[test]
+    fn python_target_defines_c_style_enums_before_data_enums_defaulting_to_them() {
+        let output = target()
+            .render(&bindings(
+                r#"
+                #[data]
+                pub enum Fatal {
+                    Misuse {
+                        #[boltffi::default(Reason::Unknown)]
+                        reason: Reason,
+                    },
+                    Bug,
+                }
+
+                #[data]
+                #[repr(i32)]
+                pub enum Reason {
+                    Unknown = 0,
+                    Closed = 1,
+                }
+                "#,
+            ))
+            .expect("Python target should render a data enum defaulting to a C-style enum");
+        let init = file(&output, "demo/__init__.py");
+        let reason = init.find("class Reason(").expect("Reason is defined");
+        let fatal = init.find("class Fatal").expect("Fatal is defined");
+
+        assert!(
+            reason < fatal,
+            "Reason is defined before Fatal defaults to it"
+        );
+    }
+
+    #[test]
     fn python_target_renders_direct_record_associated_callables() {
         let output = target()
             .render(&bindings(
