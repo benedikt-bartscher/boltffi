@@ -869,6 +869,43 @@ mod tests {
     }
 
     #[test]
+    fn python_target_declares_enum_helpers_before_any_method_uses_them() {
+        let output = target()
+            .render(&bindings(
+                r#"
+                #[data]
+                #[repr(i32)]
+                pub enum Alpha {
+                    A = 0,
+                }
+
+                #[data(impl)]
+                impl Alpha {
+                    pub fn zeta(&self) -> Zeta {
+                        Zeta::Z
+                    }
+                }
+
+                #[data]
+                #[repr(i32)]
+                pub enum Zeta {
+                    Z = 0,
+                }
+                "#,
+            ))
+            .expect("Python target should render an enum method returning a later enum");
+        let extension = extension(&output);
+        let prototype = extension
+            .find("static PyObject *boltffi_python_box_zeta(___Zeta value);")
+            .expect("the boxer of Zeta is declared ahead");
+        let first_use = extension
+            .find("boltffi_python_box_zeta(boltffi_python_")
+            .expect("Alpha.zeta boxes its result");
+
+        assert!(prototype < first_use);
+    }
+
+    #[test]
     fn python_target_renders_direct_record_associated_callables() {
         let output = target()
             .render(&bindings(

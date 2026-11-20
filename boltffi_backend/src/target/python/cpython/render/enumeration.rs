@@ -78,6 +78,34 @@ impl Enumeration {
         }
     }
 
+    /// The prototypes of the helpers that records, functions and other enums call. The
+    /// module declares them ahead of every declaration, so a method may reach an enum the
+    /// module defines after it.
+    pub fn forward_declarations(&self) -> Result<String> {
+        let symbols = &self.symbols;
+        Ok(match &self.shape {
+            Shape::CStyle { .. } => {
+                let c_type = symbols.c_type()?;
+                format!(
+                    "static int {parser}(PyObject *value, {c_type} *out);\n\
+                     static int {wire_encoder}(PyObject *value, PyObject **out_wire, const uint8_t **out_ptr, uintptr_t *out_len);\n\
+                     static PyObject *{boxer}({c_type} value);\n\
+                     static PyObject *{owned_decoder}(FfiBuf_u8 buffer);\n",
+                    parser = symbols.parser,
+                    wire_encoder = symbols.wire_encoder,
+                    boxer = symbols.boxer,
+                    owned_decoder = symbols.owned_decoder,
+                )
+            }
+            Shape::Data => format!(
+                "static int {wire_encoder}(PyObject *value, PyObject **out_wire, const uint8_t **out_ptr, uintptr_t *out_len);\n\
+                 static PyObject *{owned_decoder}(FfiBuf_u8 buffer);\n",
+                wire_encoder = symbols.parser,
+                owned_decoder = symbols.boxer,
+            ),
+        })
+    }
+
     pub fn render(self) -> Result<Emitted> {
         let symbols = self.symbols;
         let source = match self.shape {

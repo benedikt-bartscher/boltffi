@@ -31,6 +31,7 @@ struct NativeModuleTemplate {
     free_function: Identifier,
     init_function: Identifier,
     support: ModuleSupport,
+    enum_prototypes: Vec<String>,
     records: Vec<String>,
     enums: Vec<String>,
     classes: Vec<String>,
@@ -97,6 +98,7 @@ impl<'render, 'bindings> NativeModule<'render, 'bindings> {
             free_function: bridge.symbols().free_function().clone(),
             init_function: bridge.symbols().init_function().clone(),
             support,
+            enum_prototypes: declarations.enum_prototypes()?,
             records: declarations.record_sources(),
             enums: declarations.enum_sources(),
             classes: declarations.class_sources(),
@@ -154,6 +156,13 @@ impl ModuleDeclarations {
 
     fn enum_sources(&self) -> Vec<String> {
         self.enums.iter().map(Rendered::source).collect()
+    }
+
+    fn enum_prototypes(&self) -> Result<Vec<String>> {
+        self.enums
+            .iter()
+            .map(|enumeration| enumeration.declaration.forward_declarations())
+            .collect()
     }
 
     fn class_sources(&self) -> Vec<String> {

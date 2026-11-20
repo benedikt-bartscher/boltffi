@@ -1484,6 +1484,9 @@ static int boltffi_python_raise_frozen_field(PyObject *name) {
     return -1;
 }
 {% endif %}
+{% for prototype in enum_prototypes %}
+{{ prototype }}
+{%- endfor %}
 {% for record in records %}
 {{ record }}
 {% endfor %}
